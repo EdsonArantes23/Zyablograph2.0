@@ -9,11 +9,16 @@ from google import genai
 from telegram import Bot
 from telegram.error import TelegramError
 
-# ========== НАСТРОЙКИ ==========
+# ========== НАСТРОЙКИ (без BOT_TOKEN — его даёт Bothost) ==========
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "417850992"))
+
+# Bothost автоматически передаёт токен в переменную BOT_TOKEN
+# Если по какой-то причине нет — попробуем TOKEN
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("Токен бота не найден! Укажи его в поле «Токен» на Bothost.")
 
 # Файл для хранения списка чатов
 CHATS_FILE = "chats.json"
@@ -38,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 # ========== РАБОТА С CHATS.JSON ==========
 def load_chats():
-    """Загружает список отслеживаемых чатов из файла."""
     try:
         with open(CHATS_FILE, "r") as f:
             return json.load(f)
@@ -47,7 +51,6 @@ def load_chats():
 
 
 def save_chats(chats):
-    """Сохраняет список чатов в файл."""
     with open(CHATS_FILE, "w") as f:
         json.dump(chats, f)
 
@@ -96,38 +99,29 @@ def generate_vestnik(chat_log: str) -> str:
         return "Вестник обосрался. Технический пиздец."
 
 
-# ========== ОБРАБОТКА СООБЩЕНИЙ (ВКЛЮЧАЯ ТОПИКИ) ==========
+# ========== ОБРАБОТКА СООБЩЕНИЙ ==========
 async def handle_message(message):
-    """Сохраняет сообщение в лог нужного чата. Работает с топиками."""
     chat_id = message.chat.id
 
-    # Игнорируем, если чат не в списке отслеживаемых
     chats = load_chats()
     if chat_id not in chats:
         return
 
-    # Определяем автора
     author = message.from_user.first_name or message.from_user.username or "Анон"
     text = message.text or message.caption or ""
 
-    # Если в супергруппе есть топики, message.message_thread_id будет не None
     thread_id = getattr(message, "message_thread_id", None)
 
-    # Обработка фото
     if message.photo:
         file_id = message.photo[-1].file_id
         description = await describe_photo(file_id)
         text = f"{text}\n{description}" if text else description
 
-    # Формируем ссылку на сообщение
-    # Для супергруппы: убираем "-100" из chat_id
     chat_id_str = str(chat_id).replace("-100", "")
     msg_link = f"https://t.me/c/{chat_id_str}/{message.message_id}"
 
-    # Если есть топик — добавляем его ID для информации
     topic_info = f"[topic:{thread_id}] " if thread_id else ""
 
-    # Создаём хранилище для чата, если его ещё нет
     if chat_id not in daily_messages:
         daily_messages[chat_id] = []
 
@@ -142,7 +136,6 @@ async def handle_message(message):
 
 # ========== ЕЖЕДНЕВНАЯ СВОДКА ==========
 async def send_daily_vestnik():
-    """Отправляет сводку для каждого отслеживаемого чата."""
     chats = load_chats()
 
     for chat_id in chats:
@@ -167,16 +160,13 @@ async def send_daily_vestnik():
         except TelegramError as e:
             logger.error(f"Ошибка отправки в {chat_id}: {e}")
 
-        # Очищаем лог этого чата
         daily_messages[chat_id] = []
 
 
-# ========== АДМИНСКИЕ КОМАНДЫ (ЛИЧКА) ==========
+# ========== АДМИНСКИЕ КОМАНДЫ ==========
 async def process_admin_command(update):
-    """Обрабатывает команды от админа в личке."""
     text = update.message.text or ""
 
-    # /add_chat -100XXXXXXXXXX
     if text.startswith("/add_chat"):
         parts = text.split()
         if len(parts) < 2:
@@ -194,7 +184,6 @@ async def process_admin_command(update):
         except ValueError:
             await bot.send_message(ADMIN_ID, "❌ Неверный ID чата.")
 
-    # /remove_chat -100XXXXXXXXXX
     elif text.startswith("/remove_chat"):
         parts = text.split()
         if len(parts) < 2:
@@ -212,7 +201,6 @@ async def process_admin_command(update):
         except ValueError:
             await bot.send_message(ADMIN_ID, "❌ Неверный ID чата.")
 
-    # /list_chats
     elif text.startswith("/list_chats"):
         chats = load_chats()
         if chats:
@@ -221,13 +209,11 @@ async def process_admin_command(update):
             msg = "📋 Нет отслеживаемых чатов."
         await bot.send_message(ADMIN_ID, msg)
 
-    # /test [chat_id] [кол-во]
     elif text.startswith("/test"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
         count = int(parts[2]) if len(parts) > 2 else 10
 
-        # Если chat_id не указан — берём первый из списка
         if chat_id is None:
             chats = load_chats()
             if not chats:
@@ -249,7 +235,6 @@ async def process_admin_command(update):
         result = generate_vestnik(chat_log)
         await bot.send_message(ADMIN_ID, result)
 
-    # /status
     elif text.startswith("/status"):
         msg_parts = ["📊 Статистика:"]
         for cid, msgs in daily_messages.items():
@@ -258,7 +243,6 @@ async def process_admin_command(update):
             msg_parts.append("  Пусто.")
         await bot.send_message(ADMIN_ID, "\n".join(msg_parts))
 
-    # /reset [chat_id]
     elif text.startswith("/reset"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
@@ -269,7 +253,6 @@ async def process_admin_command(update):
             daily_messages.clear()
             await bot.send_message(ADMIN_ID, "🗑️ Все логи сброшены.")
 
-    # /help
     elif text.startswith("/help"):
         help_text = """
 🛠 **Админ-команды Вестника:**
@@ -302,28 +285,24 @@ async def scheduler():
 # ========== ЗАПУСК ==========
 async def main():
     logger.info("Вестник запущен!")
+    logger.info(f"Токен: {BOT_TOKEN[:10]}...")  # Покажет только начало токена для проверки
 
-    # Загружаем чаты и создаём для них пустые списки
     chats = load_chats()
     for cid in chats:
         if cid not in daily_messages:
             daily_messages[cid] = []
     logger.info(f"Отслеживаем чаты: {chats}")
 
-    # Запускаем планировщик
     asyncio.create_task(scheduler())
 
-    # Long polling — видит ВСЕ топики
     offset = None
     while True:
         try:
             updates = await bot.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
             for update in updates:
                 if update.message:
-                    # Сообщение от админа в личке — команды
                     if update.message.chat.id == ADMIN_ID:
                         await process_admin_command(update)
-                    # Сообщение в любой группе — сохраняем в лог
                     else:
                         await handle_message(update.message)
                 offset = update.update_id + 1
