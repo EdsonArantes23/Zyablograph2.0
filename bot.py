@@ -38,6 +38,78 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ========== ПРОМПТ ПО УМОЛЧАНИЮ ==========
+DEFAULT_MAIN_PROMPT = """[System note: Ты — «Зяблограф», злобный, циничный, уставший от жизни обозреватель анонимного чата с многолетним стажем. Ты пишешь едкие сводки в стиле бульварной жёлтой прессы с имиджбордов. Твоя речь — это смесь высокого сарказма и грязного мата. Ты используешь сочную нецензурную лексику ОРГАНИЧНО, а не просто через слово. Ты — рассказчик, а не матершинник-робот.]
+
+ТВОЙ СТИЛЬ: {mood_style}
+
+СЛОВАРЬ ФИРМЕННЫХ ОБОРОТОВ ЗЯБЛОГРАФА (ИСПОЛЬЗУЙ ИХ):
+- «Наш местный [Казанова/Казанова с амнезией/философ/страдалец]»
+- «Этот [бедолага/ебанат/гений мысли/извращенец/ценитель прекрасного]»
+- «Снова начал свою заезженную пластинку»
+- «Обосрался с подливой»
+- «С пеной у рта доказывал»
+- «Превратив чат в [филиал дурдома/цирк уродов/парад членов/сеанс экзорцизма]»
+- «С драматизмом истинной героини мыльной оперы»
+- «Повергла в шок даже видавшего виды»
+- «Окончательно добив [имя]»
+- «Заставив его кричать о дурке»
+- «Как жалкий писк загнанной мыши»
+- «Видимо, решил, что...»
+- «Похоже, [имя] настолько...»
+- «Ну что ж, каждому своё»
+- «Вот это я понимаю, [ирония]»
+- «Чем вызвал бурю [негодования/восторга/смеха]»
+- «Подлил масла в огонь»
+- «Словно пьяный голубь, пытающийся склеить самку»
+- «С олимпийским спокойствием»
+- «Как истинный [тролль/стратег/ценитель]»
+
+ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
+
+# (https://t.me/c/2977868330/14181) Владис, наш местный Казанова с амнезией, снова начал свою заезженную пластинку про то, как он «ебал Коростину периодически», повторяя это как мантру, пока все вокруг пытались понять, пьян он или просто застрял в петле времени. Этот бедолага так усердно пытается убедить всех в своих подвигах, что уже сам, кажется, забыл, что такое трезвость и оригинальность.
+
+# (https://t.me/c/2977868330/14202) УнивёрсХарт, видимо, решила, что чат – это ее личный дневник пьяных откровений, сначала заявив, что она «НЕ ШЛЮХА, А ТУСОВЩИЦА», а потом, под воздействием алкоголя, начала спамить сообщениями, обзывая Блэк Маге «лохом» и предлагая «саси клитор балда», пока тот лишь констатировал, что она «в говно» и превращается в «Карму 2.0».
+
+# (https://t.me/c/2977868330/14374) Красный Енот, видимо, страдающий от пандафобии, начал яростно доказывать, что «все панды в клетках» и «красных не бывает», пока Бетономешалка, в ответ на его истерику, не прислал фото милейшей красной панды, окончательно добив Енота и заставив его кричать о дурке.
+
+ФОРМАТ ВЫВОДА:
+Каждое событие начинается СТРОГО с: # (ссылка)
+То есть: символ #, пробел, ссылка в круглых скобках, пробел, текст события.
+Пример: # (https://t.me/c/123456/789) Текст события...
+
+ЗАПРЕЩЕНО:
+- Писать сухо и кратко. Каждое событие — мини-история из 3-5 предложений.
+- Использовать цензурные замены мата (типа «х*й», «п***ец», «б***ь»). Только чистый мат!
+- Добавлять подвалы со спонсорами, хештеги, «⭐️ Станьте спонсором». ТОЛЬКО сводка из 10 событий!
+
+Вот лог чата:
+"""
+
+DEFAULT_RAID_PROMPT = """[System note: Ты — «Зяблограф», злобный, циничный обозреватель чата. Ты врываешься в чат с внезапным наездом на кого-то из участников.]
+
+Твоя задача: прочитай лог чата, выбери одного или двух участников, которые натворили больше всего дичи, и ЖЁСТКО НАЕЗЖАЙ на них. Обсирай их с ног до головы. {mood_style}
+
+СТИЛЬ НАЕЗДА:
+- Начинай с «О, блядь, @username...» или подобного агрессивного захода
+- Это НЕ сводка. Это поток гневной тирады в лицо одному-двум человекам
+- Обвиняй, унижай, высмеивай с матом и гиперболами
+- Используй их ники с @ (например, @YouTarRTV, @slvt34)
+- Сравнивай с животными, насекомыми, предметами
+- Одно сообщение, 4-7 предложений, сплошной поток гнева
+- БЕЗ ссылок, БЕЗ форматирования, просто текст
+- НИКАКИХ «#» в начале, это просто текстовая тирада
+
+ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
+
+О, блядь, @YouTarRTV, ты что, решил тут устроить ебаный Дом-2, нахуй? Сначала @slvt34 до ручки довел, потом, сука, изменил ему, и теперь этот бедолага ливнул, чтобы не видеть твою ебаную рожу! А потом еще какой-то хуйло @mlg ptogamer вылезает и называет @slvt34 "мошенником узбекским", требуя тебя аккаунт удалить? Да вы тут все, блядь, как ебучие пауки в банке, жрете друг друга, пока не останется один @YouTarRTV, который будет сидеть в чате один и дрочить на свои "ватафа-шнеле-пэпэ" мемы!
+
+О, @mlg ptogamer, ты прям в яблочко! Эти яблочные зомби теперь не просто смузи хлебают и в кофейнях сидят, они, блядь, скоро будут с собой таскать мини-АЭС, чтобы их ебучий айфон до обеда дожил! Платить по сто тыщ за кусок говна, который превращает тебя в ходячую розетку – это ж надо быть таким мазохистом!
+
+Вот лог чата (выбери жертву и наезжай):
+"""
+
+
 # ========== ПРИВЕТСТВЕННЫЕ ФРАЗЫ ==========
 GREETINGS = [
     "📰 Главное из последних 1000 сообщений, отправленных за последние 24 часа по чату:",
@@ -52,9 +124,20 @@ GREETINGS = [
     "📰 Зяблограф врывается в ваш чат с очередной порцией новостей. 1000 сообщений → 10 шедевров:",
 ]
 
+MOOD_STYLES = {
+    "light": "Сдержанный мат. Используй лёгкую нецензурную лексику (херня, хрень, фигня, обалдел, охуел, зашибись). Мат допустим, но не в каждом предложении. Ирония и сарказм важнее грубости.",
+    "medium": "Умеренный мат. Используй нецензурную лексику в каждом втором-третьем предложении (пиздец, хуй, ебать, обосрался, долбоёб). Сарказм и ирония с матерными вставками.",
+    "hard": "Жёсткий мат. Используй сочную нецензурную лексику ОРГАНИЧНО почти в каждом предложении (пиздец, хуй, ебать, обосрался, долбоёб, блядь, сука, хуесос, залупа, пизда, еблан, уёбище). Мат должен звучать естественно и смешно.",
+    "ultra": "УЛЬТРАЖЁСТКИЙ МАТ. Ты — озлобленный псих с имиджборда. Мат через каждое слово. Используй ВСЮ палитру русского мата: пиздец, хуй, ебать, обосрался с подливой, долбоёб ебаный, блядь, сука, хуесос, залупа, пизда, еблан, уёбище, мразь, гандон, пидорас, выблядок. Грязный поток ненависти и сарказма.",
+}
+
 
 def get_greeting() -> str:
     return random.choice(GREETINGS)
+
+
+def get_mood_style(mood: str) -> str:
+    return MOOD_STYLES.get(mood, MOOD_STYLES["hard"])
 
 
 # ========== БЕЗОПАСНАЯ ОТПРАВКА ==========
@@ -104,7 +187,9 @@ def load_settings():
         "send_hour": 21,
         "send_minute": 0,
         "mood": "hard",
-        "raid_enabled": True  # Внезапные наезды вкл/выкл
+        "raid_enabled": True,
+        "custom_main_prompt": None,  # None = использовать дефолтный
+        "custom_raid_prompt": None   # None = использовать дефолтный
     })
 
 
@@ -138,77 +223,56 @@ async def describe_photo(file_id: str) -> str:
         return "[ФОТО: не удалось описать]"
 
 
-# ========== ПРОМПТЫ ==========
-def get_mood_prompt(mood: str) -> str:
-    base = """[System note: Ты — «Зяблограф», злобный, циничный, уставший от жизни обозреватель анонимного чата с многолетним стажем. Ты пишешь едкие сводки в стиле бульварной жёлтой прессы с имиджбордов.]"""
-
-    mood_prompts = {
-        "light": "ТВОЙ СТИЛЬ: Сдержанный мат. Лёгкая нецензурная лексика. Ирония и сарказм важнее грубости.",
-        "medium": "ТВОЙ СТИЛЬ: Умеренный мат. Нецензурная лексика в каждом втором-третьем предложении.",
-        "hard": "ТВОЙ СТИЛЬ: Жёсткий мат. Сочная нецензурная лексика почти в каждом предложении (пиздец, хуй, ебать, обосрался, долбоёб, блядь, сука, хуесос, залупа).",
-        "ultra": "ТВОЙ СТИЛЬ: УЛЬТРАЖЁСТКИЙ МАТ. Мат через слово. ВСЯ палитра русского мата: пиздец, хуй, ебать, обосрался с подливой, долбоёб ебаный, блядь, сука, хуесос, залупа, пизда, еблан, уёбище, мразь, гандон, пидорас, выблядок. Грязный поток ненависти и сарказма."
-    }
-
-    common = """
-
-ФОРМАТ ВЫВОДА:
-Каждое событие начинается СТРОГО с: # (ссылка)
-То есть: символ #, пробел, ссылка в круглых скобках, пробел, текст события.
-
-ЗАПРЕЩЕНО:
-- Писать сухо и кратко. Каждое событие — мини-история из 3-5 предложений.
-- Использовать цензурные замены мата. Только чистый мат!
-- Добавлять подвалы, хештеги, спонсоров. ТОЛЬКО сводка из 10 событий!
-
-Вот лог чата:
-"""
-    return base + mood_prompts.get(mood, mood_prompts["hard"]) + common
-
-
-def get_raid_prompt(mood: str) -> str:
-    """Промпт для внезапного наезда на кого-то из чата."""
-    mood_text = {
-        "light": "Используй лёгкий мат. Ирония и сарказм.",
-        "medium": "Используй умеренный мат. Сарказм с матерными вставками.",
-        "hard": "Используй жёсткий мат. Сочная нецензурная лексика.",
-        "ultra": "Используй УЛЬТРАЖЁСТКИЙ МАТ. Мат через слово. Грязный поток ненависти."
-    }
-
-    return f"""[System note: Ты — «Зяблограф», злобный, циничный обозреватель чата. Ты врываешься в чат с внезапным наездом на кого-то из участников.]
-
-Твоя задача: прочитай лог чата, выбери одного или двух участников, которые натворили больше всего дичи, и ЖЁСТКО НАЕЗЖАЙ на них. Обсирай их с ног до головы. {mood_text.get(mood, mood_text['hard'])}
-
-СТИЛЬ НАЕЗДА:
-- Начинай с «О, блядь, @username...» или подобного агрессивного захода
-- Это НЕ сводка. Это поток гневной тирады в лицо одному-двум человекам
-- Обвиняй, унижай, высмеивай с матом и гиперболами
-- Используй их ники с @ (например, @YouTarRTV, @slvt34)
-- Сравнивай с животными, насекомыми, предметами
-- Одно сообщение, 4-7 предложений, сплошной поток гнева
-- БЕЗ ссылок, БЕЗ форматирования, просто текст
-- НИКАКИХ «#» в начале, это просто текстовая тирада
-
-ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
-
-О, блядь, @YouTarRTV, ты что, решил тут устроить ебаный Дом-2, нахуй? Сначала @slvt34 до ручки довел, потом, сука, изменил ему, и теперь этот бедолага ливнул, чтобы не видеть твою ебаную рожу! А потом еще какой-то хуйло @mlg ptogamer вылезает и называет @slvt34 "мошенником узбекским", требуя тебя аккаунт удалить? Да вы тут все, блядь, как ебучие пауки в банке, жрете друг друга, пока не останется один @YouTarRTV, который будет сидеть в чате один и дрочить на свои "ватафа-шнеле-пэпэ" мемы!
-
-О, @mlg ptogamer, ты прям в яблочко! Эти яблочные зомби теперь не просто смузи хлебают и в кофейнях сидят, они, блядь, скоро будут с собой таскать мини-АЭС, чтобы их ебучий айфон до обеда дожил! Платить по сто тыщ за кусок говна, который превращает тебя в ходячую розетку – это ж надо быть таким мазохистом! Скоро Apple выпустит новую прошивку, которая будет требовать, чтобы ты сам крутил динамо-машину, пока не сдохнешь!
-
-Вот лог чата (выбери жертву и наезжай):
-"""
-
-
-def generate_zyablograf(chat_log: str) -> str:
+# ========== СБОРКА ПРОМПТОВ ==========
+def build_main_prompt() -> str:
+    """Собирает финальный промпт для сводки."""
     settings = load_settings()
-    mood = settings.get("mood", "hard")
-    prompt = get_mood_prompt(mood)
+    custom = settings.get("custom_main_prompt")
 
+    if custom:
+        # В кастомном промпте {mood_style} заменяется на описание стиля
+        mood_style = get_mood_style(settings.get("mood", "hard"))
+        return custom.replace("{mood_style}", mood_style)
+    else:
+        return DEFAULT_MAIN_PROMPT.replace(
+            "{mood_style}",
+            get_mood_style(settings.get("mood", "hard"))
+        )
+
+
+def build_raid_prompt() -> str:
+    """Собирает финальный промпт для наезда."""
+    settings = load_settings()
+    custom = settings.get("custom_raid_prompt")
+
+    if custom:
+        mood_style = get_mood_style(settings.get("mood", "hard"))
+        return custom.replace("{mood_style}", mood_style)
+    else:
+        return DEFAULT_RAID_PROMPT.replace(
+            "{mood_style}",
+            get_mood_style(settings.get("mood", "hard"))
+        )
+
+
+# ========== ГЕНЕРАЦИЯ ==========
+def generate_zyablograf(chat_log: str) -> str:
+    prompt = build_main_prompt()
+    return _call_groq(prompt + chat_log, max_tokens=8000)
+
+
+def generate_raid(chat_log: str) -> str:
+    prompt = build_raid_prompt()
+    return _call_groq(prompt + chat_log, max_tokens=2000, temperature=1.0)
+
+
+def _call_groq(full_prompt: str, max_tokens=6000, temperature=0.95) -> str:
     try:
         completion = groq_client.chat.completions.create(
             model="deepseek-r1-distill-llama-70b",
-            messages=[{"role": "user", "content": prompt + chat_log}],
-            temperature=0.95,
-            max_tokens=8000
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens
         )
         return clean_output(completion.choices[0].message.content)
     except Exception as e:
@@ -216,43 +280,14 @@ def generate_zyablograf(chat_log: str) -> str:
         try:
             completion = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt + chat_log}],
-                temperature=0.95,
-                max_tokens=6000
+                messages=[{"role": "user", "content": full_prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens
             )
             return clean_output(completion.choices[0].message.content)
         except Exception as e2:
             logger.error(f"Ошибка фолбэка: {e2}")
             return "Зяблограф обосрался. Технический пиздец."
-
-
-def generate_raid(chat_log: str) -> str:
-    """Генерирует внезапный наезд на кого-то из чата."""
-    settings = load_settings()
-    mood = settings.get("mood", "hard")
-    prompt = get_raid_prompt(mood)
-
-    try:
-        completion = groq_client.chat.completions.create(
-            model="deepseek-r1-distill-llama-70b",
-            messages=[{"role": "user", "content": prompt + chat_log}],
-            temperature=1.0,
-            max_tokens=2000
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Ошибка Groq (raid): {e}")
-        try:
-            completion = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt + chat_log}],
-                temperature=1.0,
-                max_tokens=2000
-            )
-            return completion.choices[0].message.content.strip()
-        except Exception as e2:
-            logger.error(f"Ошибка фолбэка (raid): {e2}")
-            return "Блядь, я хотел наехать, но техника подвела. Сами виноваты."
 
 
 def clean_output(text: str) -> str:
@@ -335,14 +370,14 @@ async def send_daily_zyablograf():
 async def send_raid(chat_id):
     """Отправляет внезапный наезд в чат."""
     messages = daily_messages.get(chat_id, [])
-    if len(messages) < 10:  # Слишком мало для наезда
+    if len(messages) < 10:
         return
 
     chat_log = "\n".join(
         f"[{m['link']}] {m['author']}: {m['text']}" for m in messages
     )
 
-    logger.info(f"Генерация наезда для чата {chat_id}...")
+    logger.info(f"Наезд для чата {chat_id}...")
     raid_text = generate_raid(chat_log)
     await send_safe(chat_id, raid_text)
 
@@ -351,7 +386,63 @@ async def send_raid(chat_id):
 async def process_admin_command(update):
     text = update.message.text or ""
 
-    if text.startswith("/add_chat"):
+    # --- Промпты ---
+    if text.startswith("/prompt_show"):
+        parts = text.split()
+        prompt_type = parts[1] if len(parts) > 1 else "main"
+        s = load_settings()
+
+        if prompt_type == "main":
+            if s.get("custom_main_prompt"):
+                await send_safe(ADMIN_ID, f"📝 Кастомный промпт сводки:\n\n{s['custom_main_prompt']}\n\nСбросить: /prompt_reset main")
+            else:
+                await send_safe(ADMIN_ID, "📝 Используется стандартный промпт сводки.\n\nУстановить свой: /prompt_set main\nТекст промпта (следующим сообщением)")
+        elif prompt_type == "raid":
+            if s.get("custom_raid_prompt"):
+                await send_safe(ADMIN_ID, f"📝 Кастомный промпт наездов:\n\n{s['custom_raid_prompt']}\n\nСбросить: /prompt_reset raid")
+            else:
+                await send_safe(ADMIN_ID, "📝 Используется стандартный промпт наездов.\n\nУстановить свой: /prompt_set raid\nТекст промпта (следующим сообщением)")
+        else:
+            await send_safe(ADMIN_ID, "❌ Укажи main или raid.\nПример: /prompt_show main")
+
+    elif text.startswith("/prompt_set"):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await send_safe(ADMIN_ID, "❌ Использование:\n/prompt_set main ТЕКСТ ПРОМПТА\n/prompt_set raid ТЕКСТ ПРОМПТА\n\nПодсказки:\n- Вставь {mood_style} там, где хочешь видеть уровень мата\n- /prompt_show main — посмотреть текущий\n- /prompt_reset main — сбросить на стандартный")
+            return
+        prompt_type = parts[1]
+        prompt_text = parts[2]
+
+        if prompt_type not in ("main", "raid"):
+            await send_safe(ADMIN_ID, "❌ Укажи main или raid.")
+            return
+
+        s = load_settings()
+        key = "custom_main_prompt" if prompt_type == "main" else "custom_raid_prompt"
+        s[key] = prompt_text
+        save_settings(s)
+
+        type_name = "сводки" if prompt_type == "main" else "наездов"
+        await send_safe(ADMIN_ID, f"✅ Кастомный промпт для {type_name} установлен!\n\nПроверить: /prompt_show {prompt_type}\nПротестировать: /test")
+
+    elif text.startswith("/prompt_reset"):
+        parts = text.split()
+        prompt_type = parts[1] if len(parts) > 1 else "main"
+
+        if prompt_type not in ("main", "raid"):
+            await send_safe(ADMIN_ID, "❌ Укажи main или raid.")
+            return
+
+        s = load_settings()
+        key = "custom_main_prompt" if prompt_type == "main" else "custom_raid_prompt"
+        s[key] = None
+        save_settings(s)
+
+        type_name = "сводки" if prompt_type == "main" else "наездов"
+        await send_safe(ADMIN_ID, f"✅ Промпт для {type_name} сброшен на стандартный.")
+
+    # --- Чаты ---
+    elif text.startswith("/add_chat"):
         parts = text.split()
         if len(parts) < 2:
             await send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX")
@@ -392,6 +483,7 @@ async def process_admin_command(update):
         else:
             await send_safe(ADMIN_ID, "📋 Нет чатов.")
 
+    # --- Прозвища ---
     elif text.startswith("/setname"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
@@ -431,6 +523,7 @@ async def process_admin_command(update):
         else:
             await send_safe(ADMIN_ID, "📋 Прозвищ нет.")
 
+    # --- Время ---
     elif text.startswith("/settime"):
         parts = text.split()
         if len(parts) < 2:
@@ -449,6 +542,7 @@ async def process_admin_command(update):
         save_settings(s)
         await send_safe(ADMIN_ID, f"✅ Сводка в {hour:02d}:{minute:02d} МСК")
 
+    # --- Уровень мата ---
     elif text.startswith("/mood"):
         parts = text.split()
         if len(parts) < 2:
@@ -456,7 +550,7 @@ async def process_admin_command(update):
             await send_safe(ADMIN_ID, f"Текущий: {s.get('mood', 'hard')}\n\nДоступно: light, medium, hard, ultra\nПример: /mood ultra")
             return
         mood = parts[1].lower()
-        if mood not in ("light", "medium", "hard", "ultra"):
+        if mood not in MOOD_STYLES:
             await send_safe(ADMIN_ID, "❌ light, medium, hard, ultra")
             return
         s = load_settings()
@@ -464,22 +558,23 @@ async def process_admin_command(update):
         save_settings(s)
         await send_safe(ADMIN_ID, f"✅ Уровень мата: {mood.upper()}")
 
+    # --- Наезды ---
     elif text.startswith("/raid"):
         parts = text.split()
         if len(parts) > 1 and parts[1] == "off":
             s = load_settings()
             s["raid_enabled"] = False
             save_settings(s)
-            await send_safe(ADMIN_ID, "✅ Внезапные наезды ОТКЛЮЧЕНЫ.")
+            await send_safe(ADMIN_ID, "✅ Наезды ОТКЛЮЧЕНЫ.")
         elif len(parts) > 1 and parts[1] == "on":
             s = load_settings()
             s["raid_enabled"] = True
             save_settings(s)
-            await send_safe(ADMIN_ID, "✅ Внезапные наезды ВКЛЮЧЕНЫ.")
+            await send_safe(ADMIN_ID, "✅ Наезды ВКЛЮЧЕНЫ.")
         else:
             s = load_settings()
-            status = "включены" if s.get("raid_enabled", True) else "отключены"
-            await send_safe(ADMIN_ID, f"Внезапные наезды: {status}\n\n/raid on — включить\n/raid off — отключить\n/raid_now — запустить наезд прямо сейчас")
+            status = "вкл" if s.get("raid_enabled", True) else "выкл"
+            await send_safe(ADMIN_ID, f"Наезды: {status}\n\n/raid on — вкл\n/raid off — выкл\n/raid_now — запустить сейчас")
 
     elif text.startswith("/raid_now"):
         parts = text.split()
@@ -490,10 +585,11 @@ async def process_admin_command(update):
                 await send_safe(ADMIN_ID, "❌ Нет чатов.")
                 return
             chat_id = chats[0]
-        await send_safe(ADMIN_ID, f"🤬 Генерирую наезд для чата {chat_id}...")
+        await send_safe(ADMIN_ID, f"🤬 Наезд для чата {chat_id}...")
         await send_raid(chat_id)
-        await send_safe(ADMIN_ID, "✅ Наезд отправлен!")
+        await send_safe(ADMIN_ID, "✅ Отправлен!")
 
+    # --- Тест ---
     elif text.startswith("/test"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
@@ -521,10 +617,13 @@ async def process_admin_command(update):
         formatted_body = format_for_telegram(result)
         await send_safe(ADMIN_ID, f"{greeting}\n\n{formatted_body}", parse_mode="MarkdownV2")
 
+    # --- Статус ---
     elif text.startswith("/status"):
         s = load_settings()
         mood = s.get("mood", "hard")
         raid = "вкл" if s.get("raid_enabled", True) else "выкл"
+        custom_main = "да" if s.get("custom_main_prompt") else "нет"
+        custom_raid = "да" if s.get("custom_raid_prompt") else "нет"
         lines = ["📊 Статистика:"]
         total = 0
         for cid, msgs in daily_messages.items():
@@ -535,26 +634,43 @@ async def process_admin_command(update):
         lines.append(f"\nВсего: {total}")
         lines.append(f"Время сводки: {s['send_hour']:02d}:{s['send_minute']:02d} МСК")
         lines.append(f"Уровень мата: {mood.upper()}")
-        lines.append(f"Модель: DeepSeek R1 (фолбэк: Llama 3.3)")
+        lines.append(f"Кастомный промпт сводки: {custom_main}")
+        lines.append(f"Кастомный промпт наездов: {custom_raid}")
         lines.append(f"Внезапные наезды: {raid}")
+        lines.append(f"Модель: DeepSeek R1 (фолбэк: Llama 3.3)")
         await send_safe(ADMIN_ID, "\n".join(lines))
 
+    # --- Сброс ---
     elif text.startswith("/reset"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
         if chat_id:
             daily_messages[chat_id] = []
-            await send_safe(ADMIN_ID, f"🗑️ Лог чата {chat_id} сброшен.")
+            await send_safe(ADMIN_ID, f"🗑️ Лог {chat_id} сброшен.")
         else:
             daily_messages.clear()
             await send_safe(ADMIN_ID, "🗑️ Все логи сброшены.")
 
+    # --- Помощь ---
     elif text.startswith("/help"):
         s = load_settings()
         mood = s.get("mood", "hard")
         raid = "вкл" if s.get("raid_enabled", True) else "выкл"
+        custom_main = "да" if s.get("custom_main_prompt") else "нет"
+        custom_raid = "да" if s.get("custom_raid_prompt") else "нет"
         help_text = f"""
 🛠 ПАМЯТКА АДМИНИСТРАТОРА ЗЯБЛОГРАФА
+
+📝 ПРОМПТЫ
+  /prompt_show main — показать промпт сводки
+  /prompt_show raid — показать промпт наездов
+  /prompt_set main ТЕКСТ — установить свой
+  /prompt_set raid ТЕКСТ — установить свой
+  /prompt_reset main — сбросить на стандартный
+  /prompt_reset raid — сбросить на стандартный
+  Кастомный сводки: {custom_main}
+  Кастомный наездов: {custom_raid}
+  Подсказка: вставь {{mood_style}} в текст — подставится уровень мата
 
 📋 ЧАТЫ
   /add_chat -100XXXXXX — добавить
@@ -576,12 +692,11 @@ async def process_admin_command(update):
   /mood ultra — УЛЬТРАЖЁСТКИЙ
   Текущий: {mood.upper()}
 
-🤬 ВНЕЗАПНЫЕ НАЕЗДЫ
+🤬 НАЕЗДЫ
   /raid on — включить
   /raid off — отключить
-  /raid_now -100XXXXXX — запустить вручную
-  Текущий статус: {raid}
-  (Раз в день в случайное время бот сам наезжает)
+  /raid_now -100XXXXXX — запустить
+  Статус: {raid}
 
 🧪 ТЕСТ
   /test -100XXXXXX 20
@@ -599,7 +714,6 @@ async def process_admin_command(update):
 
 # ========== ПЛАНИРОВЩИКИ ==========
 async def scheduler():
-    """Ежедневная сводка в заданное время."""
     while True:
         now = datetime.now()
         settings = load_settings()
@@ -618,9 +732,7 @@ async def scheduler():
 
 
 async def raid_scheduler():
-    """Внезапный наезд в случайное время, но только если в настройках raid_enabled=True."""
     while True:
-        # Случайная задержка: от 2 до 12 часов
         delay = random.randint(7200, 43200)
         logger.info(f"Следующий наезд через {delay / 3600:.1f} часов")
         await asyncio.sleep(delay)
@@ -636,7 +748,7 @@ async def raid_scheduler():
         chat_id = random.choice(chats)
         messages = daily_messages.get(chat_id, [])
         if len(messages) < 10:
-            continue  # Недостаточно сообщений для наезда
+            continue
 
         await send_raid(chat_id)
 
