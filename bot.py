@@ -9,19 +9,17 @@ from google import genai
 from telegram import Bot
 from telegram.error import TelegramError
 
-# ========== НАСТРОЙКИ (без BOT_TOKEN — его даёт Bothost) ==========
+# ========== НАСТРОЙКИ ==========
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "417850992"))
 
-# Bothost автоматически передаёт токен в переменную BOT_TOKEN
-# Если по какой-то причине нет — попробуем TOKEN
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Токен бота не найден! Укажи его в поле «Токен» на Bothost.")
 
-# Файл для хранения списка чатов
 CHATS_FILE = "chats.json"
+NAMES_FILE = "names.json"
 
 SEND_HOUR = 21
 SEND_MINUTE = 0
@@ -31,7 +29,6 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 google_client = genai.Client(api_key=GOOGLE_API_KEY)
 bot = Bot(token=BOT_TOKEN)
 
-# Хранилище: {chat_id: [сообщения]}
 daily_messages = {}
 
 logging.basicConfig(
@@ -41,18 +38,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ========== РАБОТА С CHATS.JSON ==========
-def load_chats():
+# ========== РАБОТА С ФАЙЛАМИ ==========
+def load_json(path, default):
     try:
-        with open(CHATS_FILE, "r") as f:
+        with open(path, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return []
+        return default
+
+
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_chats():
+    return load_json(CHATS_FILE, [])
 
 
 def save_chats(chats):
-    with open(CHATS_FILE, "w") as f:
-        json.dump(chats, f)
+    save_json(CHATS_FILE, chats)
+
+
+def load_names():
+    return load_json(NAMES_FILE, {})
+
+
+def save_names(names):
+    save_json(NAMES_FILE, names)
+
+
+def get_display_name(user) -> str:
+    names = load_names()
+    uid = str(user.id)
+    if uid in names:
+        return names[uid]["name"]
+    return user.first_name or user.username or "Анон"
 
 
 # ========== ОПИСАНИЕ ФОТО ==========
@@ -75,14 +96,35 @@ async def describe_photo(file_id: str) -> str:
 
 # ========== ГЕНЕРАЦИЯ СВОДКИ ==========
 def generate_vestnik(chat_log: str) -> str:
-    prompt = """[System note: Ты — злобный обозреватель чата с имиджборда. Твоя задача — писать ТОЛЬКО на русском, используя обсценную лексику (пиздец, хуй, ебать, обосрался, долбоёб, блядь) в каждом предложении. Ты циничный, уставший от жизни тролль. Ты — Вестник.]
+    prompt = """[System note: Ты — злобный обозреватель анонимного чата с имиджборда. Твоя задача — писать ТОЛЬКО на русском языке, используя сочную обсценную лексику (пиздец, хуй, ебать, обосрался, долбоёб, блядь, сука, хуесос, залупа) в каждом предложении. Ты циничный, уставший от жизни тролль с многолетним стажем. Ты — Вестник.]
 
-Проанализируй лог чата ниже и напиши сводку из 10 событий в формате:
-# (ссылка на сообщение) [Матерный пересказ в стиле желтой прессы]
+Твоя задача — проанализировать лог чата и написать сводку из 10 самых значимых, смешных или абсурдных событий.
 
-После сводки добавь подвал:
-⭐️ Станьте спонсором: @ververy
-#вестник
+ПРАВИЛА ОФОРМЛЕНИЯ:
+1. Каждое событие начинается СТРОГО с символа # и сразу после него (без пробела) идёт ссылка в круглых скобках: # (ссылка)
+2. После ссылки идёт пробел, а затем развёрнутое описание события.
+3. Ссылки должны быть СТРОГО в формате: # (https://t.me/...)
+
+СТИЛЬ НАПИСАНИЯ КАЖДОГО СОБЫТИЯ:
+- Начинай с имени участника, добавляя к нему едкий эпитет или прозвище: «наш местный Казанова», «эта пьяная истеричка», «гений мысли», «трепетный олень», «нежный цветочек», «вечно обосранный философ».
+- Описывай событие с сарказмом и театральной драматизацией, как в бульварной газете: «снова начал свою заезженную пластинку», «с драматизмом истинной героини мыльной оперы», «повергла в шок даже видавшего виды», «окончательно добив и заставив его кричать».
+- Обязательно используй гиперболы и сравнения: «словно это не чат, а сеанс экзорцизма», «как загнанная мышь», «с пеной у рта доказывал», «превратив чат в филиал дурдома».
+- Если в сообщениях есть диалоги или перепалки — описывай их как театральную сцену с завязкой, кульминацией и развязкой.
+- Каждое событие должно быть развёрнутым — НЕ МЕНЕЕ 3-4 предложений! Не пиши сухо и кратко. Добавляй детали, эмоции, оценки.
+- В конце каждого события подводи едкий итог: высмеивай участников, делай циничный вывод.
+
+ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
+
+# (https://t.me/c/2977868330/14181) Владис, наш местный Казанова с амнезией, снова начал свою заезженную пластинку про то, как он «ебал Коростину периодически», повторяя это как мантру, пока все вокруг пытались понять, пьян он или просто застрял в петле времени. Этот бедолага так усердно пытается убедить всех в своих подвигах, что уже сам, кажется, забыл, что такое трезвость и оригинальность.
+
+# (https://t.me/c/2977868330/14185) Когда Видишка предположила, что Владис опять нажрался, тот, вместо того чтобы отрицать, начал допытываться, кто еще тут «пьяный», словно ищет собутыльника, а не оправдания; в итоге Видишка, устав от его пьяных домогательств, пообещала набить ему ебало, как только сама напьется в отпуске, что звучит как идеальный план мести.
+
+# (https://t.me/c/2977868330/14202) УнивёрсХарт, видимо, решила, что чат – это ее личный дневник пьяных откровений, сначала заявив, что она «НЕ ШЛЮХА, А ТУСОВЩИЦА», а потом, под воздействием алкоголя, начала спамить сообщениями, обзывая Блэк Маге «лохом» и предлагая «саси клитор балда», пока тот лишь констатировал, что она «в говно» и превращается в «Карму 2.0».
+
+ПОМНИ:
+- Ссылки ВСЕГДА в скобках сразу после #: # (ссылка) Текст...
+- Никаких «подвалов» со спонсорами, никаких хештегов #вестник, никаких «⭐️ Станьте спонсором». ТОЛЬКО сводка из 10 событий!
+- Каждое событие — маленькая история, а не сухой факт.
 
 Вот лог чата:
 """
@@ -90,8 +132,8 @@ def generate_vestnik(chat_log: str) -> str:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt + chat_log}],
-            temperature=0.9,
-            max_tokens=4000
+            temperature=0.95,
+            max_tokens=6000
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -99,28 +141,47 @@ def generate_vestnik(chat_log: str) -> str:
         return "Вестник обосрался. Технический пиздец."
 
 
+# ========== ОЧИСТКА ВЫВОДА ==========
+def clean_vestnik_output(text: str) -> str:
+    """Убирает подвал с ⭐️ и #вестник, если модель всё же их добавит."""
+    text = text.strip()
+    # Удаляем "⭐️ Станьте спонсором" и всё после
+    if "⭐️ Станьте спонсором" in text:
+        text = text.split("⭐️ Станьте спонсором")[0].strip()
+    # Удаляем "#вестник" (в любом регистре)
+    text = text.replace("#вестник", "").replace("#вестник".upper(), "").strip()
+    return text
+
+
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
 async def handle_message(message):
     chat_id = message.chat.id
-
     chats = load_chats()
+
     if chat_id not in chats:
         return
 
-    author = message.from_user.first_name or message.from_user.username or "Анон"
+    author = get_display_name(message.from_user)
     text = message.text or message.caption or ""
 
-    thread_id = getattr(message, "message_thread_id", None)
+    if not text and getattr(message, "forward_origin", None):
+        fo = message.forward_origin
+        if hasattr(fo, "sender_user") and fo.sender_user:
+            author = f"↪️ {get_display_name(fo.sender_user)}"
+        elif hasattr(fo, "chat") and fo.chat:
+            author = f"↪️ {fo.chat.title or fo.chat.username or 'Канал'}"
+        text = "[пересланное сообщение]"
+
+    if not text:
+        text = "[мусор]"
 
     if message.photo:
         file_id = message.photo[-1].file_id
         description = await describe_photo(file_id)
-        text = f"{text}\n{description}" if text else description
+        text = f"{text}\n{description}" if text != "[мусор]" else description
 
     chat_id_str = str(chat_id).replace("-100", "")
     msg_link = f"https://t.me/c/{chat_id_str}/{message.message_id}"
-
-    topic_info = f"[topic:{thread_id}] " if thread_id else ""
 
     if chat_id not in daily_messages:
         daily_messages[chat_id] = []
@@ -128,23 +189,17 @@ async def handle_message(message):
     daily_messages[chat_id].append({
         "link": msg_link,
         "author": author,
-        "text": text.strip() if text else "[без текста]",
-        "thread_id": thread_id
+        "text": text.strip()
     })
-    logger.info(f"[+] {topic_info}{author} в чате {chat_id}")
+    logger.info(f"[+] {author} в чате {chat_id}")
 
 
 # ========== ЕЖЕДНЕВНАЯ СВОДКА ==========
 async def send_daily_vestnik():
     chats = load_chats()
-
     for chat_id in chats:
         messages = daily_messages.get(chat_id, [])
         if not messages:
-            try:
-                await bot.send_message(chat_id, "Сегодня в чате было пусто. Позор.")
-            except TelegramError as e:
-                logger.error(f"Ошибка отправки в {chat_id}: {e}")
             continue
 
         chat_log = "\n".join(
@@ -153,6 +208,7 @@ async def send_daily_vestnik():
 
         logger.info(f"Генерация сводки для чата {chat_id} ({len(messages)} сообщений)...")
         result = generate_vestnik(chat_log)
+        result = clean_vestnik_output(result)
 
         try:
             await bot.send_message(chat_id, result)
@@ -209,6 +265,52 @@ async def process_admin_command(update):
             msg = "📋 Нет отслеживаемых чатов."
         await bot.send_message(ADMIN_ID, msg)
 
+    elif text.startswith("/setname"):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await bot.send_message(ADMIN_ID, "❌ Использование: /setname user_id Прозвище")
+            return
+        try:
+            uid = str(int(parts[1]))
+            nickname = parts[2].strip()
+            names = load_names()
+            names[uid] = {
+                "name": nickname,
+                "updated": datetime.now().isoformat()
+            }
+            save_names(names)
+            await bot.send_message(ADMIN_ID, f"✅ Для пользователя {uid} установлено прозвище: {nickname}")
+        except ValueError:
+            await bot.send_message(ADMIN_ID, "❌ Неверный user_id.")
+
+    elif text.startswith("/removename"):
+        parts = text.split()
+        if len(parts) < 2:
+            await bot.send_message(ADMIN_ID, "❌ Использование: /removename user_id")
+            return
+        try:
+            uid = str(int(parts[1]))
+            names = load_names()
+            if uid in names:
+                old_name = names[uid]["name"]
+                del names[uid]
+                save_names(names)
+                await bot.send_message(ADMIN_ID, f"✅ Прозвище «{old_name}» для {uid} удалено.")
+            else:
+                await bot.send_message(ADMIN_ID, f"⚠️ Для {uid} нет прозвища.")
+        except ValueError:
+            await bot.send_message(ADMIN_ID, "❌ Неверный user_id.")
+
+    elif text.startswith("/list_names"):
+        names = load_names()
+        if names:
+            msg = "📋 Прозвища:\n"
+            for uid, data in names.items():
+                msg += f"  {uid} → {data['name']}\n"
+        else:
+            msg = "📋 Прозвищ нет."
+        await bot.send_message(ADMIN_ID, msg)
+
     elif text.startswith("/test"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
@@ -231,8 +333,9 @@ async def process_admin_command(update):
             f"[{m['link']}] {m['author']}: {m['text']}" for m in sample
         )
 
-        await bot.send_message(ADMIN_ID, f"🧪 Тест сводки для {chat_id} ({len(sample)} сообщений)...")
+        await bot.send_message(ADMIN_ID, f"🧪 Тест для {chat_id} ({len(sample)} сообщений)...")
         result = generate_vestnik(chat_log)
+        result = clean_vestnik_output(result)
         await bot.send_message(ADMIN_ID, result)
 
     elif text.startswith("/status"):
@@ -255,13 +358,16 @@ async def process_admin_command(update):
 
     elif text.startswith("/help"):
         help_text = """
-🛠 **Админ-команды Вестника:**
+🛠 Админ-команды:
 
 /add_chat -100XXXXXX — добавить чат
 /remove_chat -100XXXXXX — удалить чат
-/list_chats — показать список чатов
+/list_chats — список чатов
+/setname user_id Прозвище — задать прозвище
+/removename user_id — удалить прозвище
+/list_names — список прозвищ
 /test [chat_id] [кол-во] — тестовая сводка
-/status — статистика по логам
+/status — статистика
 /reset [chat_id] — сбросить лог
 /help — это сообщение
 """
@@ -285,13 +391,15 @@ async def scheduler():
 # ========== ЗАПУСК ==========
 async def main():
     logger.info("Вестник запущен!")
-    logger.info(f"Токен: {BOT_TOKEN[:10]}...")  # Покажет только начало токена для проверки
 
     chats = load_chats()
     for cid in chats:
         if cid not in daily_messages:
             daily_messages[cid] = []
     logger.info(f"Отслеживаем чаты: {chats}")
+
+    nicks = load_names()
+    logger.info(f"Загружено прозвищ: {len(nicks)}")
 
     asyncio.create_task(scheduler())
 
