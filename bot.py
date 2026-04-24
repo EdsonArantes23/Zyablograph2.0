@@ -37,6 +37,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ========== БЕЗОПАСНАЯ ОТПРАВКА (БЕЗ MARKDOWN ОШИБОК) ==========
+async def send_safe(chat_id, text, parse_mode=None):
+    """Отправляет сообщение. Если Markdown ломается — отправляет без форматирования."""
+    try:
+        return await bot.send_message(chat_id, text, parse_mode=parse_mode)
+    except TelegramError as e:
+        if parse_mode:
+            logger.warning(f"Markdown error, отправляю без форматирования: {e}")
+            return await bot.send_message(chat_id, text)
+        else:
+            raise
+
+
+def escape_md(text: str) -> str:
+    """Экранирует спецсимволы для MarkdownV2."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+
 # ========== РАБОТА С ФАЙЛАМИ ==========
 def load_json(path, default):
     try:
@@ -68,7 +87,6 @@ def save_names(names):
 
 
 def load_settings():
-    """Загружает настройки бота (время отправки)."""
     default = {"send_hour": 21, "send_minute": 0}
     return load_json(SETTINGS_FILE, default)
 
@@ -173,7 +191,6 @@ def generate_vestnik(chat_log: str) -> str:
             return "Вестник обосрался. Технический пиздец."
 
 
-# ========== ОЧИСТКА ВЫВОДА ==========
 def clean_vestnik_output(text: str) -> str:
     text = text.strip()
     if "⭐️ Станьте спонсором" in text:
@@ -182,7 +199,6 @@ def clean_vestnik_output(text: str) -> str:
     return text
 
 
-# ========== ФОРМАТИРОВАНИЕ ССЫЛОК ==========
 def format_for_telegram(text: str) -> str:
     pattern = r'#\s*\((https?://t\.me/[^\s\)]+)\)'
     replacement = r'[#](\1)'
@@ -245,17 +261,7 @@ async def send_daily_vestnik():
         result = generate_vestnik(chat_log)
         formatted = format_for_telegram(result)
 
-        try:
-            await bot.send_message(chat_id, formatted, parse_mode="MarkdownV2")
-            logger.info(f"Сводка отправлена в {chat_id}!")
-        except TelegramError as e:
-            logger.warning(f"Ошибка Markdown, отправляю без форматирования: {e}")
-            try:
-                await bot.send_message(chat_id, result)
-                logger.info(f"Сводка отправлена (без Markdown) в {chat_id}!")
-            except TelegramError as e2:
-                logger.error(f"Ошибка отправки в {chat_id}: {e2}")
-
+        await send_safe(chat_id, formatted, parse_mode="MarkdownV2")
         daily_messages[chat_id] = []
 
 
@@ -263,10 +269,13 @@ async def send_daily_vestnik():
 async def process_admin_command(update):
     text = update.message.text or ""
 
+    # Все ответы отправляем БЕЗ Markdown, чтобы избежать ошибок экранирования
+    # Только в /help и /list_chats используем Markdown с осторожностью
+
     if text.startswith("/add_chat"):
         parts = text.split()
         if len(parts) < 2:
-            await bot.send_message(ADMIN_ID, "❌ Использование: /add_chat -100XXXXXX")
+            await send_safe(ADMIN_ID, "❌ Использование: /add_chat -100XXXXXX\nПример: /add_chat -1002977868330")
             return
         try:
             new_chat = int(parts[1])
@@ -274,16 +283,16 @@ async def process_admin_command(update):
             if new_chat not in chats:
                 chats.append(new_chat)
                 save_chats(chats)
-                await bot.send_message(ADMIN_ID, f"✅ Чат {new_chat} добавлен! Бот начнёт собирать сообщения из всех топиков.")
+                await send_safe(ADMIN_ID, f"✅ Чат {new_chat} добавлен! Бот начнёт собирать сообщения из всех топиков.")
             else:
-                await bot.send_message(ADMIN_ID, f"⚠️ Чат {new_chat} уже в списке.")
+                await send_safe(ADMIN_ID, f"⚠️ Чат {new_chat} уже в списке.")
         except ValueError:
-            await bot.send_message(ADMIN_ID, "❌ Неверный ID чата. Пример: /add_chat -1002977868330")
+            await send_safe(ADMIN_ID, "❌ Неверный ID чата. Пример: /add_chat -1002977868330")
 
     elif text.startswith("/remove_chat"):
         parts = text.split()
         if len(parts) < 2:
-            await bot.send_message(ADMIN_ID, "❌ Использование: /remove_chat -100XXXXXX")
+            await send_safe(ADMIN_ID, "❌ Использование: /remove_chat -100XXXXXX\nПример: /remove_chat -1002977868330")
             return
         try:
             chat = int(parts[1])
@@ -291,28 +300,28 @@ async def process_admin_command(update):
             if chat in chats:
                 chats.remove(chat)
                 save_chats(chats)
-                await bot.send_message(ADMIN_ID, f"✅ Чат {chat} удалён.")
+                await send_safe(ADMIN_ID, f"✅ Чат {chat} удалён.")
             else:
-                await bot.send_message(ADMIN_ID, f"⚠️ Чат {chat} не найден в списке отслеживаемых.")
+                await send_safe(ADMIN_ID, f"⚠️ Чат {chat} не найден в списке отслеживаемых.")
         except ValueError:
-            await bot.send_message(ADMIN_ID, "❌ Неверный ID чата.")
+            await send_safe(ADMIN_ID, "❌ Неверный ID чата.")
 
     elif text.startswith("/list_chats"):
         chats = load_chats()
         if chats:
-            msg = "📋 **Отслеживаемые чаты:**\n" + "\n".join(f"• `{c}`" for c in chats)
-            msg += "\n\n_Чтобы добавить новый: /add\\_chat -100XXXXXX_"
+            lines = ["📋 Отслеживаемые чаты:"]
+            for c in chats:
+                lines.append(f"  - {c}")
+            lines.append("")
+            lines.append("Добавить новый: /add_chat -100XXXXXX")
+            await send_safe(ADMIN_ID, "\n".join(lines))
         else:
-            msg = "📋 **Нет отслеживаемых чатов.**\n\n_Добавь первый: /add\\_chat -100XXXXXX_"
-        try:
-            await bot.send_message(ADMIN_ID, msg, parse_mode="MarkdownV2")
-        except TelegramError:
-            await bot.send_message(ADMIN_ID, msg)
+            await send_safe(ADMIN_ID, "📋 Нет отслеживаемых чатов.\n\nДобавь первый: /add_chat -100XXXXXX")
 
     elif text.startswith("/setname"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            await bot.send_message(ADMIN_ID, "❌ Использование: /setname user_id Прозвище\nПример: /setname 123456789 Васян")
+            await send_safe(ADMIN_ID, "❌ Использование: /setname user_id Прозвище\nПример: /setname 123456789 Васян\n\nКак узнать ID: добавь @getidsbot в чат")
             return
         try:
             uid = str(int(parts[1]))
@@ -323,14 +332,14 @@ async def process_admin_command(update):
                 "updated": datetime.now().isoformat()
             }
             save_names(names)
-            await bot.send_message(ADMIN_ID, f"✅ Для пользователя `{uid}` установлено прозвище: **{nickname}**\n\n_Как узнать ID: добавь @getidsbot в чат или проверь логи бота._", parse_mode="MarkdownV2")
+            await send_safe(ADMIN_ID, f"✅ Для пользователя {uid} установлено прозвище: {nickname}\n\nКак узнать ID: добавь @getidsbot в чат или проверь логи бота.")
         except ValueError:
-            await bot.send_message(ADMIN_ID, "❌ Неверный user\\_id. Он должен быть числом. Пример: /setname 123456789 Васян", parse_mode="MarkdownV2")
+            await send_safe(ADMIN_ID, "❌ Неверный user_id. Он должен быть числом. Пример: /setname 123456789 Васян")
 
     elif text.startswith("/removename"):
         parts = text.split()
         if len(parts) < 2:
-            await bot.send_message(ADMIN_ID, "❌ Использование: /removename user_id\nПример: /removename 123456789")
+            await send_safe(ADMIN_ID, "❌ Использование: /removename user_id\nПример: /removename 123456789")
             return
         try:
             uid = str(int(parts[1]))
@@ -339,46 +348,46 @@ async def process_admin_command(update):
                 old_name = names[uid]["name"]
                 del names[uid]
                 save_names(names)
-                await bot.send_message(ADMIN_ID, f"✅ Прозвище «**{old_name}**» для `{uid}` удалено. Пользователь снова будет под реальным именем.", parse_mode="MarkdownV2")
+                await send_safe(ADMIN_ID, f"✅ Прозвище «{old_name}» для {uid} удалено. Пользователь снова будет под реальным именем.")
             else:
-                await bot.send_message(ADMIN_ID, f"⚠️ Для пользователя `{uid}` нет прозвища.\n\n_Проверь список: /list\\_names_", parse_mode="MarkdownV2")
+                await send_safe(ADMIN_ID, f"⚠️ Для пользователя {uid} нет прозвища.\n\nПроверь список: /list_names")
         except ValueError:
-            await bot.send_message(ADMIN_ID, "❌ Неверный user\\_id.", parse_mode="MarkdownV2")
+            await send_safe(ADMIN_ID, "❌ Неверный user_id.")
 
     elif text.startswith("/list_names"):
         names = load_names()
         if names:
-            msg = "📋 **Прозвища:**\n" + "\n".join(f"• `{uid}` → **{data['name']}**" for uid, data in names.items())
-            msg += "\n\n_Добавить: /setname user\\_id Прозвище_"
+            lines = ["📋 Прозвища:"]
+            for uid, data in names.items():
+                lines.append(f"  {uid} → {data['name']}")
+            lines.append("")
+            lines.append("Добавить: /setname user_id Прозвище")
+            await send_safe(ADMIN_ID, "\n".join(lines))
         else:
-            msg = "📋 **Прозвищ нет.**\n\n_Добавь первое: /setname user\\_id Прозвище_"
-        try:
-            await bot.send_message(ADMIN_ID, msg, parse_mode="MarkdownV2")
-        except TelegramError:
-            await bot.send_message(ADMIN_ID, msg)
+            await send_safe(ADMIN_ID, "📋 Прозвищ нет.\n\nДобавь первое: /setname user_id Прозвище")
 
     elif text.startswith("/settime"):
         parts = text.split()
         if len(parts) < 2:
-            await bot.send_message(ADMIN_ID, "❌ Использование: /settime ЧЧ:ММ\nПример: /settime 09:30")
+            await send_safe(ADMIN_ID, "❌ Использование: /settime ЧЧ:ММ\nПример: /settime 09:30\nТекущее время можно узнать через /status")
             return
         time_str = parts[1]
         if not re.match(r'^\d{1,2}:\d{2}$', time_str):
-            await bot.send_message(ADMIN_ID, "❌ Неверный формат. Используй ЧЧ:ММ (например, 21:00 или 09:30)")
+            await send_safe(ADMIN_ID, "❌ Неверный формат. Используй ЧЧ:ММ (например, 21:00 или 09:30)")
             return
         try:
             hour, minute = map(int, time_str.split(":"))
             if hour < 0 or hour > 23 or minute < 0 or minute > 59:
                 raise ValueError
         except ValueError:
-            await bot.send_message(ADMIN_ID, "❌ Некорректное время. Часы: 0-23, минуты: 0-59.")
+            await send_safe(ADMIN_ID, "❌ Некорректное время. Часы: 0-23, минуты: 0-59.")
             return
 
         settings = load_settings()
         settings["send_hour"] = hour
         settings["send_minute"] = minute
         save_settings(settings)
-        await bot.send_message(ADMIN_ID, f"✅ Время отправки сводки установлено на **{hour:02d}:{minute:02d} МСК**.\n\n_Изменения вступят в силу при следующей проверке (в течение минуты)._", parse_mode="MarkdownV2")
+        await send_safe(ADMIN_ID, f"✅ Время отправки сводки установлено на {hour:02d}:{minute:02d} МСК.\n\nИзменения вступят в силу в течение минуты.")
 
     elif text.startswith("/test"):
         parts = text.split()
@@ -388,126 +397,113 @@ async def process_admin_command(update):
         if chat_id is None:
             chats = load_chats()
             if not chats:
-                await bot.send_message(ADMIN_ID, "❌ Нет отслеживаемых чатов. Добавь через /add\\_chat.", parse_mode="MarkdownV2")
+                await send_safe(ADMIN_ID, "❌ Нет отслеживаемых чатов. Добавь через /add_chat.")
                 return
             chat_id = chats[0]
 
         messages = daily_messages.get(chat_id, [])
         sample = messages[-min(count, len(messages)):]
         if not sample:
-            await bot.send_message(ADMIN_ID, f"❌ Нет сообщений для чата `{chat_id}`.\n\n_Дождись, пока в чате накопятся сообщения, или проверь, что бот добавлен в чат и Privacy Mode выключен в @BotFather._", parse_mode="MarkdownV2")
+            await send_safe(ADMIN_ID, f"❌ Нет сообщений для чата {chat_id}.\n\nДождись, пока в чате накопятся сообщения, или проверь:\n1. Бот добавлен в чат\n2. Privacy Mode выключен в @BotFather")
             return
 
         chat_log = "\n".join(
             f"[{m['link']}] {m['author']}: {m['text']}" for m in sample
         )
 
-        await bot.send_message(ADMIN_ID, f"🧪 Генерирую сводку для `{chat_id}` по {len(sample)} сообщениям...\n\n_Обычно занимает 10-30 секунд._", parse_mode="MarkdownV2")
+        await send_safe(ADMIN_ID, f"🧪 Генерирую сводку для {chat_id} по {len(sample)} сообщениям...\n\nОбычно занимает 10-30 секунд.")
         result = generate_vestnik(chat_log)
         formatted = format_for_telegram(result)
-        try:
-            await bot.send_message(ADMIN_ID, formatted, parse_mode="MarkdownV2")
-        except TelegramError:
-            await bot.send_message(ADMIN_ID, result)
+        await send_safe(ADMIN_ID, formatted, parse_mode="MarkdownV2")
 
     elif text.startswith("/status"):
         settings = load_settings()
-        msg_parts = ["📊 **Статистика:**\n"]
+        lines = ["📊 Статистика:"]
         total = 0
         for cid, msgs in daily_messages.items():
-            msg_parts.append(f"• Чат `{cid}`: {len(msgs)} сообщений")
+            lines.append(f"  Чат {cid}: {len(msgs)} сообщений")
             total += len(msgs)
         if not daily_messages:
-            msg_parts.append("• _Пусто. Сообщения ещё не накопились._")
-        msg_parts.append(f"\n**Всего:** {total} сообщений")
-        msg_parts.append(f"**Время отправки:** ежедневно в {settings['send_hour']:02d}:{settings['send_minute']:02d} МСК")
-        msg_parts.append(f"**Модель:** DeepSeek R1 (фолбэк: Llama 3.3)")
-        msg_parts.append(f"\n_Изменить время: /settime ЧЧ:ММ_")
-        try:
-            await bot.send_message(ADMIN_ID, "\n".join(msg_parts), parse_mode="MarkdownV2")
-        except TelegramError:
-            await bot.send_message(ADMIN_ID, "\n".join(msg_parts))
+            lines.append("  Пусто. Сообщения ещё не накопились.")
+        lines.append(f"\nВсего: {total} сообщений")
+        lines.append(f"Время отправки: ежедневно в {settings['send_hour']:02d}:{settings['send_minute']:02d} МСК")
+        lines.append(f"Модель: DeepSeek R1 (фолбэк: Llama 3.3)")
+        lines.append(f"\nИзменить время: /settime ЧЧ:ММ")
+        await send_safe(ADMIN_ID, "\n".join(lines))
 
     elif text.startswith("/reset"):
         parts = text.split()
         chat_id = int(parts[1]) if len(parts) > 1 else None
         if chat_id:
             daily_messages[chat_id] = []
-            await bot.send_message(ADMIN_ID, f"🗑️ Лог чата `{chat_id}` сброшен.", parse_mode="MarkdownV2")
+            await send_safe(ADMIN_ID, f"🗑️ Лог чата {chat_id} сброшен.")
         else:
             daily_messages.clear()
-            await bot.send_message(ADMIN_ID, "🗑️ **Все логи сброшены.**")
+            await send_safe(ADMIN_ID, "🗑️ Все логи сброшены.")
 
     elif text.startswith("/help"):
         settings = load_settings()
-        help_text = rf"""
-🛠 **ПАМЯТКА АДМИНИСТРАТОРА ВЕСТНИКА**
+        h = settings['send_hour']
+        m = settings['send_minute']
+        help_text = f"""
+🛠 ПАМЯТКА АДМИНИСТРАТОРА ВЕСТНИКА
 
-**📋 УПРАВЛЕНИЕ ЧАТАМИ**
-/add\_chat \-100XXXXXX
-Добавить чат в отслеживание\. Бот видит ВСЕ топики\.
-_Пример: /add\_chat \-1002977868330_
+📋 УПРАВЛЕНИЕ ЧАТАМИ
+  /add_chat -100XXXXXX
+    Добавить чат в отслеживание. Бот видит ВСЕ топики.
+    Пример: /add_chat -1002977868330
 
-/remove\_chat \-100XXXXXX
-Удалить чат из отслеживания\.
+  /remove_chat -100XXXXXX
+    Удалить чат из отслеживания.
 
-/list\_chats
-Показать все отслеживаемые чаты\.
+  /list_chats
+    Показать все отслеживаемые чаты.
 
-**🏷️ ПРОЗВИЩА ПОЛЬЗОВАТЕЛЕЙ**
-/setname user\_id Прозвище
-Назначить прозвище для сводок\.
-_Пример: /setname 123456789 Васян_
+🏷️ ПРОЗВИЩА ПОЛЬЗОВАТЕЛЕЙ
+  /setname user_id Прозвище
+    Назначить прозвище для сводок.
+    Пример: /setname 123456789 Васян
 
-/removename user\_id
-Удалить прозвище\. Пользователь вернётся к реальному имени\.
+  /removename user_id
+    Удалить прозвище.
 
-/list\_names
-Показать все прозвища\.
+  /list_names
+    Показать все прозвища.
 
-_Как узнать user\_id: добавь @getidsbot в чат или смотри логи бота на Bothost\._
+  Как узнать user_id: добавь @getidsbot в чат.
 
-**⏰ НАСТРОЙКА ВРЕМЕНИ**
-/settime ЧЧ:ММ
-Установить время ежедневной отправки сводки\.
-_Пример: /settime 09:30_
-_Сейчас установлено: **{settings['send_hour']:02d}:{settings['send_minute']:02d} МСК**_
+⏰ НАСТРОЙКА ВРЕМЕНИ
+  /settime ЧЧ:ММ
+    Установить время ежедневной отправки.
+    Пример: /settime 09:30
+    Сейчас установлено: {h:02d}:{m:02d} МСК
 
-**🧪 ТЕСТИРОВАНИЕ**
-/test \-100XXXXXX 20
-Сгенерировать тестовую сводку по последним N сообщениям\.
-_Можно без аргументов: /test — первый чат, 10 сообщений\._
+🧪 ТЕСТИРОВАНИЕ
+  /test -100XXXXXX 20
+    Тестовая сводка по последним N сообщениям.
+    Можно без аргументов: /test — 10 сообщений.
 
-/status
-Статистика: сколько сообщений накоплено, какая модель используется, когда будет отправка\.
+  /status
+    Статистика: сообщения, время отправки, модель.
 
-/reset \-100XXXXXX
-Сбросить накопленный лог для чата\.
-_Без аргументов: /reset — сбросить ВСЁ\._
+  /reset -100XXXXXX
+    Сбросить лог для чата.
+    Без аргументов: /reset — сбросить ВСЁ.
 
-**⚙️ ТЕХНИЧЕСКАЯ ИНФОРМАЦИЯ**
-• **Отправка сводки:** каждый день в {settings['send_hour']:02d}:{settings['send_minute']:02d} МСК
-• **Модель:** DeepSeek R1 Distill Llama 70B \(Groq\)
-• **Фолбэк:** Llama 3\.3 70B \(бесплатная, если DeepSeek недоступен\)
-• **Картинки:** Gemini 2\.0 Flash \(Google AI Studio\)
-• **Топики:** бот видит все ветки обсуждений
+⚙️ ТЕХНИЧЕСКАЯ ИНФОРМАЦИЯ
+  • Отправка сводки: каждый день в {h:02d}:{m:02d} МСК
+  • Модель: DeepSeek R1 (фолбэк: Llama 3.3)
+  • Картинки: Gemini 2.0 Flash
+  • Топики: бот видит все ветки
 
-**🔧 ЕСЛИ ЧТО\-ТО НЕ РАБОТАЕТ**
-1\. Проверь Privacy Mode в @BotFather — должен быть **выключен**
-2\. Удали бота из чата и добавь заново после смены Privacy Mode
-3\. Дай боту права админа \(минимум — чтение сообщений\)
-4\. Проверь переменные окружения на Bothost: `GROQ\_API\_KEY`, `GOOGLE\_API\_KEY`, `ADMIN\_ID`
-5\. Нажми «Пересобрать» на Bothost
-
-**📞 КОНТАКТЫ**
-• Хостинг: Bothost\.ru
-• Нейросети: Groq \+ Google AI Studio
+🔧 ЕСЛИ НЕ РАБОТАЕТ
+  1. Privacy Mode в @BotFather — ВЫКЛЮЧИТЬ
+  2. Удалить бота из чата и добавить заново
+  3. Дать права админа (чтение сообщений)
+  4. Проверить переменные на Bothost
+  5. Нажать «Пересобрать»
 """
-        try:
-            await bot.send_message(ADMIN_ID, help_text, parse_mode="MarkdownV2")
-        except TelegramError as e:
-            logger.warning(f"Ошибка Markdown в /help: {e}")
-            await bot.send_message(ADMIN_ID, "/help — памятка администратора (отправлена в упрощённом виде из-за ошибки форматирования)")
+        await send_safe(ADMIN_ID, help_text)
 
 
 # ========== ПЛАНИРОВЩИК ==========
