@@ -35,13 +35,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-# ========== ЗАГРУЗКА СЛОВАРЯ ИЗ JSON ==========
+# ========== ЗАГРУЗКА СЛОВАРЯ ==========
 def load_dictionary():
     try:
         with open(DICT_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.warning(f"Не удалось загрузить dictionary.json: {e}. Использую резервный словарь.")
+        logger.warning(f"Словарь не загружен: {e}")
         return {
             "существительные": ["пиздец", "хуй", "дебил", "мудак"],
             "глаголы": ["обосрался", "охуел", "заскулил"],
@@ -55,16 +55,48 @@ def load_dictionary():
 
 
 SWEAR_DICT = load_dictionary()
-EXPRESSIVE_DICT = load_dictionary()  # Всё в одном файле
 
 
 def get_dict_stats() -> str:
-    """Возвращает статистику по словарю."""
     total = sum(len(v) for v in SWEAR_DICT.values())
-    parts = []
-    for key, val in SWEAR_DICT.items():
-        parts.append(f"{key}: {len(val)}")
+    parts = [f"{k}: {len(v)}" for k, v in SWEAR_DICT.items()]
     return f"{total} слов ({', '.join(parts)})"
+
+
+# ========== УМНЫЙ ПОДБОР СЛОВ ИЗ СЛОВАРЯ ==========
+def inject_smart_words(prompt: str) -> str:
+    """Передаёт нейросети ВЕСЬ словарь и просит выбрать подходящие под контекст слова."""
+
+    # Собираем компактную версию словаря по категориям
+    swear_nouns = ", ".join(SWEAR_DICT.get("существительные", [])[:40])
+    swear_verbs = ", ".join(SWEAR_DICT.get("глаголы", [])[:35])
+    swear_adj = ", ".join(SWEAR_DICT.get("прилагательные", [])[:30])
+    swear_adv = ", ".join(SWEAR_DICT.get("наречия", [])[:20])
+    epithets = ", ".join(SWEAR_DICT.get("эпитеты_для_людей", [])[:20])
+    metaphors = ", ".join(SWEAR_DICT.get("метафоры", [])[:15])
+    comparisons = ", ".join(SWEAR_DICT.get("сравнения", [])[:15])
+    gerunds = ", ".join(SWEAR_DICT.get("деепричастные_обороты", [])[:15])
+
+    injection = f"""
+
+📚 СЛОВАРЬ ЗЯБЛОГРАФА — ПОДБЕРИ СЛОВА ПОД КОНТЕКСТ:
+
+Ниже приведён словарь выразительных средств. Твоя задача — НЕ вставлять всё подряд, а ВЫБРАТЬ 5-8 слов и выражений, которые ИДЕАЛЬНО ПОДХОДЯТ к конкретным событиям в чате. Органично вплети их в текст сводки — так, чтобы они звучали естественно, а не как вставка «для галочки».
+
+Если какое-то слово не ложится на контекст — НЕ ИСПОЛЬЗУЙ его. Лучше меньше, но в тему.
+
+Существительные: {swear_nouns}
+Глаголы: {swear_verbs}
+Прилагательные: {swear_adj}
+Наречия: {swear_adv}
+Эпитеты для людей: {epithets}
+Метафоры: {metaphors}
+Сравнения: {comparisons}
+Деепричастные обороты: {gerunds}
+
+НЕ ИСПОЛЬЗУЙ слова, которые не подходят по смыслу. Каждое выбранное слово должно быть ОПРАВДАНО контекстом.
+"""
+    return prompt.replace("Вот лог чата:", f"{injection}\nВот лог чата:")
 
 
 # ========== ПРОМПТЫ ==========
@@ -79,7 +111,6 @@ DEFAULT_MAIN_PROMPT = """[System note: Ты — «Зяблограф», злоб
 - Этот [бедолага/ебанат/гений мысли/извращенец/ценитель прекрасного/непризнанный пророк]
 - [Великовозрастный детина/Комнатный стратег/Диванный эксперт/Мастер спорта по пиздежу]
 - [Король драмы/Император абсурда/Властелин бреда/Жертва собственного величия]
-- [Хранитель древних мемов/Коллекционер кринжей/Виновник торжества/Заслуженный артист чата]
 
 ДЕЙСТВИЯ И СОСТОЯНИЯ (РАЗНООБРАЗЬ ГЛАГОЛЫ):
 - Обосрался с подливой / навалил кучу / сел в лужу / наложил в штаны
@@ -111,19 +142,11 @@ DEFAULT_MAIN_PROMPT = """[System note: Ты — «Зяблограф», злоб
 - Видимо, в этом чате [обобщение] — это не баг, а фича
 - Кажется, у некоторых тут мозг работает на уровне [сравнение с неодушевлённым предметом]
 
-ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
-
-# (https://t.me/c/2977868330/14181) Владис, наш местный Казанова с амнезией, снова завёл свою заезженную пластинку про то, как он «ебал Коростину периодически», повторяя эту мантру с упорством дятла, пока все вокруг гадали — пьян он в хлам или застрял во временной петле. Этот великовозрастный детина так яростно пытается убедить окружающих в своих постельных подвигах, что уже сам, кажется, забыл вкус трезвости и звук собственного голоса без этих баек.
-
-# (https://t.me/c/2977868330/14202) УнивёрсХарт, видимо, перепутала чат с личным дневником пьяных откровений — сначала гордо объявила, что она «НЕ ШЛЮХА, А ТУСОВЩИЦА», а потом, накачавшись алкоготем, начала спамить оскорблениями в адрес Блэк Маге и предлагать «саси клитор балда», пока тот философски констатировал, что она «в говно» и стремительно мутирует в «Карму 2.0». Сцена, достойная пера Достоевского — если бы Достоевский бухал.
-
-# (https://t.me/c/2977868330/14374) Красный Енот, страдающий острой формой пандафобии, с пеной у рта доказывал, что «все панды сидят в клетках» и «красных не бывает в природе», распаляясь всё больше с каждым сообщением. Бетономешалка же, не говоря ни слова, просто скинул фото милейшей красной панды, чем окончательно разъебал Еноту всю картину мира и заставил его кричать о дурке — поистине, один снайперский выстрел стоит тысячи слов.
-
 ВАЖНЕЙШИЕ ПРАВИЛА:
-1. Выбери СТОЛЬКО событий, сколько реально есть. Не растягивай до 10 если素材а мало. Качество > количества.
-2. Каждое событие — УНИКАЛЬНАЯ тема. Не повторяй одну тему дважды.
-3. Каждая ссылка — УНИКАЛЬНАЯ. Не используй одну ссылку повторно.
-4. Конкретика из сообщений важнее общих фраз.
+1. Выбери СТОЛЬКО событий, сколько реально есть в логе. Не растягивай до 10 если素材а мало. Качество > количества.
+2. Каждое событие — УНИКАЛЬНАЯ тема. Не повторяй одну тему дважды в одной сводке.
+3. Каждая ссылка — УНИКАЛЬНАЯ. Не используй одну и ту же ссылку повторно.
+4. Конкретика из сообщений важнее общих фраз. Цитируй, указывай детали, кто кому что сказал.
 
 ФОРМАТ ВЫВОДА:
 Каждое событие начинается СТРОГО с: # (ссылка)
@@ -159,7 +182,7 @@ DEFAULT_RAID_PROMPT = """[System note: Ты — «Зяблограф», злоб
 
 О, блядь, @YouTarRTV, ты решил тут устроить ебаный Дом-2? Сначала @slvt34 до ручки довёл своими выходками, потом, как последняя сучара, изменил ему, и теперь этот бедолага ливнул, чтобы не видеть твою постную рожу! Вы тут все как пауки в банке — жрёте друг друга, пока не останется один, кто будет дрочить на свои мемы в гордом одиночестве!
 
-О, @mlg ptogamer, ты прям прозрел! Эти яблочные сектанты скоро будут таскать с собой мини-АЭС, чтобы их ебучий айфон дожил до обеда! Платить бешеные бабки за кусок дерьма, который сажает батарею быстрее, чем ты бегаешь за пивом — это надо быть конченным мазохистом!
+О, @mlg ptogamer, ты прям прозрел! Эти яблочные сектанты скоро будут таскать с собой мини-АЭС, чтобы их ебучий айфон дожил до обеда! Платить бешеные бабки за кусок дерьма, который сажает батарею быстрее, чем ты бегаешь за пивом — это надо быть конченным мазохистом с позолоченной клеткой!
 
 Вот лог чата (выбери 1-2 жертвы и наезжай):
 """
@@ -238,12 +261,9 @@ def save_names(names):
 
 def load_settings():
     return load_json(SETTINGS_FILE, {
-        "send_hour": 21,
-        "send_minute": 0,
-        "mood": "hard",
+        "send_hour": 21, "send_minute": 0, "mood": "hard",
         "raid_enabled": True,
-        "custom_main_prompt": None,
-        "custom_raid_prompt": None
+        "custom_main_prompt": None, "custom_raid_prompt": None
     })
 
 
@@ -254,9 +274,7 @@ def save_settings(settings):
 def get_display_name(user) -> str:
     names = load_names()
     uid = str(user.id)
-    if uid in names:
-        return names[uid]["name"]
-    return user.first_name or user.username or "Анон"
+    return names[uid]["name"] if uid in names else (user.first_name or user.username or "Анон")
 
 
 # ========== ОПИСАНИЕ ФОТО ==========
@@ -273,7 +291,7 @@ async def describe_photo(file_id: str) -> str:
         )
         return f"[ФОТО: {response.text.strip()}]"
     except Exception as e:
-        logger.error(f"Ошибка описания фото: {e}")
+        logger.error(f"Ошибка фото: {e}")
         return "[ФОТО: не удалось описать]"
 
 
@@ -283,8 +301,10 @@ def build_main_prompt() -> str:
     custom = settings.get("custom_main_prompt")
     mood_style = get_mood_style(settings.get("mood", "hard"))
     if custom:
-        return custom.replace("{mood_style}", mood_style)
-    return DEFAULT_MAIN_PROMPT.replace("{mood_style}", mood_style)
+        prompt = custom.replace("{mood_style}", mood_style)
+    else:
+        prompt = DEFAULT_MAIN_PROMPT.replace("{mood_style}", mood_style)
+    return inject_smart_words(prompt)
 
 
 def build_raid_prompt() -> str:
@@ -292,8 +312,10 @@ def build_raid_prompt() -> str:
     custom = settings.get("custom_raid_prompt")
     mood_style = get_mood_style(settings.get("mood", "hard"))
     if custom:
-        return custom.replace("{mood_style}", mood_style)
-    return DEFAULT_RAID_PROMPT.replace("{mood_style}", mood_style)
+        prompt = custom.replace("{mood_style}", mood_style)
+    else:
+        prompt = DEFAULT_RAID_PROMPT.replace("{mood_style}", mood_style)
+    return inject_smart_words(prompt)
 
 
 # ========== ГЕНЕРАЦИЯ ==========
@@ -311,8 +333,7 @@ def _call_groq(full_prompt: str, max_tokens=6000, temperature=0.95) -> str:
             completion = groq_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": full_prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens
+                temperature=temperature, max_tokens=max_tokens
             )
             return clean_output(completion.choices[0].message.content)
         except Exception as e:
@@ -354,9 +375,7 @@ async def handle_message(message):
         text = "[войс/стикер/мусор]"
     cid = str(chat_id).replace("-100", "")
     link = f"https://t.me/c/{cid}/{message.message_id}"
-    if chat_id not in daily_messages:
-        daily_messages[chat_id] = []
-    daily_messages[chat_id].append({"link": link, "author": author, "text": text.strip()})
+    daily_messages.setdefault(chat_id, []).append({"link": link, "author": author, "text": text.strip()})
 
 
 # ========== ЕЖЕДНЕВНАЯ СВОДКА ==========
@@ -391,13 +410,12 @@ async def process_admin_command(update):
             await send_safe(ADMIN_ID, "❌ main или raid."); return
         s = load_settings()
         key = "custom_main_prompt" if pt == "main" else "custom_raid_prompt"
-        name = "сводки" if pt == "main" else "наездов"
-        await send_safe(ADMIN_ID, f"📝 {name}: {s.get(key, 'стандартный')}"[:4000])
+        await send_safe(ADMIN_ID, f"📝 {pt}: {s.get(key, 'стандартный')}"[:4000])
 
     elif text.startswith("/prompt_set"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            await send_safe(ADMIN_ID, "❌ /prompt_set main/raid ТЕКСТ"); return
+            await send_safe(ADMIN_ID, "❌ /prompt_set main/raid ТЕКСТ\nВставь {mood_style} для уровня мата."); return
         pt, prompt_text = parts[1], parts[2]
         if pt not in ("main", "raid"):
             await send_safe(ADMIN_ID, "❌ main или raid."); return
@@ -420,13 +438,11 @@ async def process_admin_command(update):
         if len(parts) < 2:
             await send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX"); return
         try:
-            c = int(parts[1])
-            chats = load_chats()
+            c = int(parts[1]); chats = load_chats()
             if c not in chats:
-                chats.append(c); save_chats(chats)
-                await send_safe(ADMIN_ID, f"✅ Чат {c} добавлен!")
+                chats.append(c); save_chats(chats); await send_safe(ADMIN_ID, f"✅ Чат {c} добавлен!")
             else:
-                await send_safe(ADMIN_ID, f"⚠️ Уже в списке.")
+                await send_safe(ADMIN_ID, "⚠️ Уже в списке.")
         except ValueError:
             await send_safe(ADMIN_ID, "❌ Неверный ID.")
 
@@ -435,13 +451,11 @@ async def process_admin_command(update):
         if len(parts) < 2:
             await send_safe(ADMIN_ID, "❌ /remove_chat -100XXXXXX"); return
         try:
-            c = int(parts[1])
-            chats = load_chats()
+            c = int(parts[1]); chats = load_chats()
             if c in chats:
-                chats.remove(c); save_chats(chats)
-                await send_safe(ADMIN_ID, f"✅ Чат {c} удалён.")
+                chats.remove(c); save_chats(chats); await send_safe(ADMIN_ID, f"✅ Чат {c} удалён.")
             else:
-                await send_safe(ADMIN_ID, f"⚠️ Не найден.")
+                await send_safe(ADMIN_ID, "⚠️ Не найден.")
         except ValueError:
             await send_safe(ADMIN_ID, "❌ Неверный ID.")
 
@@ -454,10 +468,8 @@ async def process_admin_command(update):
         if len(parts) < 3:
             await send_safe(ADMIN_ID, "❌ /setname user_id Прозвище"); return
         try:
-            names = load_names()
-            names[str(int(parts[1]))] = {"name": parts[2].strip()}
-            save_names(names)
-            await send_safe(ADMIN_ID, f"✅ Прозвище: {parts[2].strip()}")
+            names = load_names(); names[str(int(parts[1]))] = {"name": parts[2].strip()}
+            save_names(names); await send_safe(ADMIN_ID, f"✅ {parts[2].strip()}")
         except ValueError:
             await send_safe(ADMIN_ID, "❌ Неверный user_id.")
 
@@ -466,11 +478,9 @@ async def process_admin_command(update):
         if len(parts) < 2:
             await send_safe(ADMIN_ID, "❌ /removename user_id"); return
         try:
-            names = load_names()
-            uid = str(int(parts[1]))
+            names = load_names(); uid = str(int(parts[1]))
             if uid in names:
-                del names[uid]; save_names(names)
-                await send_safe(ADMIN_ID, "✅ Удалено.")
+                del names[uid]; save_names(names); await send_safe(ADMIN_ID, "✅ Удалено.")
             else:
                 await send_safe(ADMIN_ID, "⚠️ Нет.")
         except ValueError:
@@ -478,10 +488,7 @@ async def process_admin_command(update):
 
     elif text.startswith("/list_names"):
         names = load_names()
-        if names:
-            await send_safe(ADMIN_ID, "📋 Прозвища:\n" + "\n".join(f"  {u} → {d['name']}" for u, d in names.items()))
-        else:
-            await send_safe(ADMIN_ID, "📋 Нет.")
+        await send_safe(ADMIN_ID, "📋 Прозвища:\n" + "\n".join(f"  {u} → {d['name']}" for u, d in names.items()) if names else "📋 Нет.")
 
     elif text.startswith("/settime"):
         parts = text.split()
@@ -490,42 +497,33 @@ async def process_admin_command(update):
         h, m = map(int, parts[1].split(":"))
         if not (0 <= h <= 23 and 0 <= m <= 59):
             await send_safe(ADMIN_ID, "❌ 0-23, 0-59."); return
-        s = load_settings()
-        s["send_hour"], s["send_minute"] = h, m
-        save_settings(s)
+        s = load_settings(); s["send_hour"], s["send_minute"] = h, m; save_settings(s)
         await send_safe(ADMIN_ID, f"✅ Сводка в {h:02d}:{m:02d} МСК")
 
     elif text.startswith("/mood"):
         parts = text.split()
         if len(parts) < 2:
-            s = load_settings()
-            await send_safe(ADMIN_ID, f"Текущий: {s.get('mood', 'hard')}\nlight, medium, hard, ultra"); return
+            await send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood', 'hard')}\nlight, medium, hard, ultra"); return
         mood = parts[1].lower()
         if mood not in MOOD_STYLES:
             await send_safe(ADMIN_ID, "❌ light, medium, hard, ultra"); return
-        s = load_settings()
-        s["mood"] = mood
-        save_settings(s)
-        await send_safe(ADMIN_ID, f"✅ Мат: {mood.upper()}")
+        s = load_settings(); s["mood"] = mood; save_settings(s)
+        await send_safe(ADMIN_ID, f"✅ {mood.upper()}")
 
     elif text.startswith("/raid"):
         parts = text.split()
         if len(parts) > 1 and parts[1] in ("on", "off"):
-            s = load_settings()
-            s["raid_enabled"] = parts[1] == "on"
-            save_settings(s)
+            s = load_settings(); s["raid_enabled"] = parts[1] == "on"; save_settings(s)
             await send_safe(ADMIN_ID, f"✅ Наезды {'ВКЛ' if parts[1] == 'on' else 'ОТКЛ'}.")
         else:
-            s = load_settings()
-            await send_safe(ADMIN_ID, f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}\n/raid on|off|now")
+            await send_safe(ADMIN_ID, f"Наезды: {'вкл' if load_settings().get('raid_enabled', True) else 'выкл'}\n/raid on|off|now")
 
     elif text.startswith("/raid_now"):
         parts = text.split()
         cid = int(parts[1]) if len(parts) > 1 else (load_chats() or [None])[0]
         if not cid:
             await send_safe(ADMIN_ID, "❌ Нет чатов."); return
-        await send_raid(cid)
-        await send_safe(ADMIN_ID, f"🤬 Наезд в {cid} отправлен!")
+        await send_raid(cid); await send_safe(ADMIN_ID, f"🤬 Наезд в {cid}!")
 
     elif text.startswith("/test"):
         parts = text.split()
@@ -533,31 +531,29 @@ async def process_admin_command(update):
         cnt = int(parts[2]) if len(parts) > 2 else 10
         if not cid:
             await send_safe(ADMIN_ID, "❌ Нет чатов."); return
-        msgs = daily_messages.get(cid, [])
-        sample = msgs[-min(cnt, len(msgs)):]
-        if not sample:
-            await send_safe(ADMIN_ID, f"❌ Нет сообщений."); return
-        log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in sample)
-        s = load_settings()
-        await send_safe(ADMIN_ID, f"🧪 Сводка ({len(sample)} сообщений, {s.get('mood', 'hard').upper()})...")
+        msgs = daily_messages.get(cid, [])[-min(cnt, len(daily_messages.get(cid, []))):]
+        if not msgs:
+            await send_safe(ADMIN_ID, "❌ Нет сообщений."); return
+        log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in msgs)
+        await send_safe(ADMIN_ID, f"🧪 Сводка ({len(msgs)} сообщений, {load_settings().get('mood', 'hard').upper()})...")
         result = generate_zyablograf(log)
-        msg = f"{get_greeting()}\n\n{format_for_telegram(result)}"
-        await send_safe(ADMIN_ID, msg, parse_mode="MarkdownV2")
+        await send_safe(ADMIN_ID, f"{get_greeting()}\n\n{format_for_telegram(result)}", parse_mode="MarkdownV2")
 
     elif text.startswith("/status"):
         s = load_settings()
         lines = ["📊 Статистика:"]
         total = 0
         for cid, msgs in daily_messages.items():
-            lines.append(f"  Чат {cid}: {len(msgs)} сообщений")
-            total += len(msgs)
+            lines.append(f"  Чат {cid}: {len(msgs)}"); total += len(msgs)
         if not daily_messages:
             lines.append("  Пусто.")
-        lines.append(f"\nВсего: {total}")
-        lines.append(f"Время: {s['send_hour']:02d}:{s['send_minute']:02d} МСК")
-        lines.append(f"Мат: {s.get('mood', 'hard').upper()}")
-        lines.append(f"Словарь: {get_dict_stats()}")
-        lines.append(f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}")
+        lines += [
+            f"\nВсего: {total}",
+            f"Время: {s['send_hour']:02d}:{s['send_minute']:02d} МСК",
+            f"Мат: {s.get('mood', 'hard').upper()}",
+            f"Словарь: {get_dict_stats()}",
+            f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}"
+        ]
         await send_safe(ADMIN_ID, "\n".join(lines))
 
     elif text.startswith("/reset"):
@@ -567,7 +563,7 @@ async def process_admin_command(update):
             daily_messages[cid] = []
         else:
             daily_messages.clear()
-        await send_safe(ADMIN_ID, f"🗑️ Сброшено.")
+        await send_safe(ADMIN_ID, "🗑️ Сброшено.")
 
     elif text.startswith("/help"):
         s = load_settings()
@@ -580,7 +576,7 @@ async def process_admin_command(update):
 🔥 /mood light|medium|hard|ultra
 🤬 /raid on|off|now
 🧪 /test|status|reset
-📚 Словарь: {get_dict_stats()}""")
+📚 {get_dict_stats()}""")
 
 
 # ========== ПЛАНИРОВЩИКИ ==========
