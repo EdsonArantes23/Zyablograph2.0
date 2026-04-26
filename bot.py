@@ -20,7 +20,8 @@ if not BOT_TOKEN:
     raise RuntimeError("Токен бота не найден! Укажи его в поле «Токен» на Bothost.")
 
 DICT_FILE = "dictionary.json"
-BOT_SETTINGS_KEY = "BOT_SETTINGS"  # Ключ переменной окружения для всех настроек
+MESSAGES_FILE = "daily_messages.json"   # файл для хранения сообщений на диске
+BOT_SETTINGS_KEY = "BOT_SETTINGS"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 bot = Bot(token=BOT_TOKEN)
@@ -35,6 +36,37 @@ MSK_TZ = timezone(timedelta(hours=3))
 
 def msk_now():
     return datetime.now(MSK_TZ)
+
+# ========== СОХРАНЕНИЕ СООБЩЕНИЙ НА ДИСК ==========
+# Теперь все накопленные сообщения хранятся в файле daily_messages.json.
+# При перезапуске бота они восстанавливаются — ничего не теряется.
+
+def save_messages_to_disk():
+    """Сохраняет daily_messages и reactions на диск."""
+    try:
+        data = {
+            "messages": {str(k): v for k, v in daily_messages.items()},
+            "reactions": {str(k): v for k, v in reactions.items()},
+        }
+        with open(MESSAGES_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения сообщений на диск: {e}")
+
+def load_messages_from_disk():
+    """Загружает daily_messages и reactions с диска при старте."""
+    global daily_messages, reactions
+    try:
+        with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        daily_messages = {int(k): v for k, v in data.get("messages", {}).items()}
+        reactions = {int(k): v for k, v in data.get("reactions", {}).items()}
+        total = sum(len(v) for v in daily_messages.values())
+        logger.info(f"Восстановлено {total} сообщений с диска.")
+    except FileNotFoundError:
+        logger.info("Файл сообщений не найден — начинаем с нуля.")
+    except Exception as e:
+        logger.warning(f"Не удалось загрузить сообщения с диска: {e}")
 
 # ========== ЗАГРУЗКА СЛОВАРЯ ==========
 def load_dictionary():
@@ -63,7 +95,6 @@ def get_dict_stats() -> str:
 
 # ========== ХРАНЕНИЕ НАСТРОЕК В ПЕРЕМЕННОЙ ОКРУЖЕНИЯ ==========
 def load_all_data():
-    """Загружает все настройки из BOT_SETTINGS (переменная окружения)."""
     raw = os.getenv(BOT_SETTINGS_KEY, "{}")
     try:
         return json.loads(raw)
@@ -72,7 +103,6 @@ def load_all_data():
         return {}
 
 def save_all_data(data):
-    """Сохраняет все настройки в BOT_SETTINGS."""
     os.environ[BOT_SETTINGS_KEY] = json.dumps(data, ensure_ascii=False)
 
 def load_chats():
@@ -99,7 +129,6 @@ def load_settings():
         "custom_main_prompt": None, "custom_raid_prompt": None
     }
     stored = load_all_data().get("settings", {})
-    # Слияние с дефолтами — если чего-то нет, подставится
     return {**defaults, **stored}
 
 def save_settings(settings):
@@ -191,21 +220,28 @@ def get_mood_style(mood: str) -> str:
 
 # ========== ЭКРАНИРОВАНИЕ MARKDOWNV2 ==========
 def escape_markdown(text: str) -> str:
-    """Экранирует спецсимволы MarkdownV2, кроме уже экранированных."""
+    """Экранирует спецсимволы MarkdownV2, сохраняя ссылки [текст](url) нетронутыми."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    # Не экранируем то, что уже экранировано (\_)
+    link_pattern = re.compile(r'(\[.*?\]\(https?://[^\)]+\))')
+    parts = link_pattern.split(text)
     result = []
-    i = 0
-    while i < len(text):
-        if text[i] == '\\' and i + 1 < len(text) and text[i+1] in escape_chars:
-            result.append(text[i:i+2])
-            i += 2
-        elif text[i] in escape_chars:
-            result.append('\\' + text[i])
-            i += 1
+    for part in parts:
+        if link_pattern.match(part):
+            result.append(part)
         else:
-            result.append(text[i])
-            i += 1
+            buf = []
+            i = 0
+            while i < len(part):
+                if part[i] == '\\' and i + 1 < len(part) and part[i+1] in escape_chars:
+                    buf.append(part[i:i+2])
+                    i += 2
+                elif part[i] in escape_chars:
+                    buf.append('\\' + part[i])
+                    i += 1
+                else:
+                    buf.append(part[i])
+                    i += 1
+            result.append(''.join(buf))
     return ''.join(result)
 
 # ========== УМНОЕ ДЕЛЕНИЕ ДЛИННЫХ СООБЩЕНИЙ ==========
@@ -259,6 +295,7 @@ async def send_safe(chat_id, text, parse_mode=None, thread_id=1):
             raise
 
 # ========== ОПИСАНИЕ ФОТО (GROQ VISION) ==========
+# Обновлена модель на актуальную llama-4-scout — бесплатная, поддерживает изображения.
 async def describe_photo(file_id: str) -> str:
     """Скачивает фото и отправляет в Groq Vision."""
     try:
@@ -267,17 +304,21 @@ async def describe_photo(file_id: str) -> str:
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{image_base64}"
 
-        completion = groq_client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Опиши подробно, что на фото. Можно с юмором. Только на русском."},
-                    {"type": "image_url", "image_url": {"url": data_url}}
-                ]
-            }],
-            temperature=0.7,
-            max_tokens=300
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None,
+            lambda: groq_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Опиши подробно, что на фото. Можно с юмором. Только на русском."},
+                        {"type": "image_url", "image_url": {"url": data_url}}
+                    ]
+                }],
+                temperature=0.7,
+                max_tokens=300
+            )
         )
         description = completion.choices[0].message.content.strip()
         logger.info(f"Фото описано (Groq): {description[:80]}...")
@@ -321,35 +362,44 @@ def build_raid_prompt(chat_id=None):
     prompt = custom.replace("{mood_style}", mood) if custom else DEFAULT_RAID_PROMPT.replace("{mood_style}", mood)
     return inject_smart_words(prompt, chat_id)
 
-def generate_zyablograf(chat_log: str, chat_id=None) -> str:
-    prompt = build_main_prompt(chat_id) + chat_log
-    return _call_groq(prompt, max_tokens=8000)
-
-def generate_raid(chat_log: str, chat_id=None) -> str:
-    prompt = build_raid_prompt(chat_id) + chat_log
-    return _call_groq(prompt, max_tokens=2000, temperature=1.0)
-
-def _call_groq(prompt, max_tokens=6000, temperature=0.95):
-    """Вызов Groq с экспоненциальным backoff."""
+async def _call_groq(prompt, max_tokens=6000, temperature=0.95):
+    """Вызов Groq с экспоненциальным backoff (async-безопасный)."""
     models = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
+    loop = asyncio.get_event_loop()
     for model in models:
         for attempt in range(3):
             try:
-                completion = groq_client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature, max_tokens=max_tokens
+                completion = await loop.run_in_executor(
+                    None,
+                    lambda: groq_client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
                 )
                 return clean_output(completion.choices[0].message.content)
             except Exception as e:
                 wait = 2 ** attempt
                 logger.warning(f"Попытка {attempt+1} для {model}: {e}. Жду {wait}с...")
                 if attempt < 2:
-                    import time
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                 else:
                     logger.error(f"Модель {model} недоступна после 3 попыток")
-        # Пробуем следующую модель
+    # Уведомляем админа если все модели упали
+    try:
+        await bot.send_message(ADMIN_ID, "⚠️ Зяблограф не смог сгенерировать текст — Groq недоступен. Все модели упали.")
+    except Exception:
+        pass
     return "Зяблограф обосрался. Технический пиздец."
+
+async def generate_zyablograf(chat_log: str, chat_id=None) -> str:
+    prompt = build_main_prompt(chat_id) + chat_log
+    return await _call_groq(prompt, max_tokens=8000)
+
+async def generate_raid(chat_log: str, chat_id=None) -> str:
+    prompt = build_raid_prompt(chat_id) + chat_log
+    return await _call_groq(prompt, max_tokens=2000, temperature=1.0)
 
 def clean_output(text):
     text = text.strip()
@@ -366,7 +416,13 @@ async def handle_message(message):
     if chat_id not in load_chats():
         return
 
-    if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
+    # Защита от from_user=None (каналы, некоторые боты)
+    if message.from_user is None:
+        return
+
+    if (message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == bot.id):
         author = get_display_name(message.from_user)
         txt = message.text or message.caption or "[без текста]"
         reactions.setdefault(chat_id, []).append({"author": author, "text": txt.strip()})
@@ -389,6 +445,8 @@ async def handle_message(message):
         "link": link, "author": author, "text": text.strip(),
         "user_id": message.from_user.id
     })
+    # Сохраняем на диск после каждого нового сообщения
+    save_messages_to_disk()
 
 # ========== ОТПРАВКА ДАЙДЖЕСТОВ И РЕЙДОВ ==========
 async def send_daily_zyablograf():
@@ -398,7 +456,7 @@ async def send_daily_zyablograf():
             continue
         important = filter_important_messages(msgs, 30)
         log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in important)
-        result = generate_zyablograf(log, chat_id)
+        result = await generate_zyablograf(log, chat_id)
         greeting = get_greeting()
         formatted_body = format_for_telegram(result)
         full_text = f"{greeting}\n\n{formatted_body}"
@@ -408,15 +466,17 @@ async def send_daily_zyablograf():
             await send_safe(chat_id, full_text, parse_mode="MarkdownV2", thread_id=1)
         else:
             logger.info(f"Сводка длинная ({len(full_text)} символов), делю на части...")
-            parts = split_by_paragraphs(formatted_body, MAX_MSG_LEN - 100)
-            for i, part in enumerate(parts):
+            msg_parts = split_by_paragraphs(formatted_body, MAX_MSG_LEN - 100)
+            for i, part in enumerate(msg_parts):
                 msg = f"{greeting}\n\n{part}" if i == 0 else part
                 await send_safe(chat_id, msg, parse_mode="MarkdownV2", thread_id=1)
-                if i < len(parts) - 1:
+                if i < len(msg_parts) - 1:
                     await asyncio.sleep(1)
 
+        # Очищаем сообщения после отправки дайджеста
         daily_messages[chat_id] = []
         reactions[chat_id] = []
+        save_messages_to_disk()
 
 async def send_raid(chat_id):
     msgs = daily_messages.get(chat_id, [])
@@ -424,26 +484,26 @@ async def send_raid(chat_id):
         return
     important = filter_important_messages(msgs, 20)
     log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in important)
-    result = generate_raid(log, chat_id)
+    result = await generate_raid(log, chat_id)
     await send_safe(chat_id, result, thread_id=1)
 
 # ========== АДМИНСКИЕ КОМАНДЫ ==========
 async def process_admin_command(update):
     text = update.message.text or ""
     if text.startswith("/add_chat"):
-        parts = text.split()
-        if len(parts) < 2: await send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX"); return
+        cmd_parts = text.split()
+        if len(cmd_parts) < 2: await send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX"); return
         try:
-            c = int(parts[1]); chats = load_chats()
+            c = int(cmd_parts[1]); chats = load_chats()
             if c not in chats: chats.append(c); save_chats(chats); await send_safe(ADMIN_ID, f"✅ Чат {c}")
             else: await send_safe(ADMIN_ID, "⚠️ Уже в списке.")
         except ValueError: await send_safe(ADMIN_ID, "❌ Неверный ID.")
 
     elif text.startswith("/remove_chat"):
-        parts = text.split()
-        if len(parts) < 2: await send_safe(ADMIN_ID, "❌ /remove_chat -100XXXXXX"); return
+        cmd_parts = text.split()
+        if len(cmd_parts) < 2: await send_safe(ADMIN_ID, "❌ /remove_chat -100XXXXXX"); return
         try:
-            c = int(parts[1]); chats = load_chats()
+            c = int(cmd_parts[1]); chats = load_chats()
             if c in chats: chats.remove(c); save_chats(chats); await send_safe(ADMIN_ID, f"✅ Чат {c} удалён.")
             else: await send_safe(ADMIN_ID, "⚠️ Не найден.")
         except ValueError: await send_safe(ADMIN_ID, "❌ Неверный ID.")
@@ -451,35 +511,35 @@ async def process_admin_command(update):
     elif text.startswith("/list_chats"): await send_safe(ADMIN_ID, "📋 Чаты:\n" + "\n".join(f"  - {c}" for c in load_chats()))
 
     elif text.startswith("/settime"):
-        parts = text.split()
-        if len(parts) < 2 or not re.match(r'^\d{1,2}:\d{2}$', parts[1]): await send_safe(ADMIN_ID, "❌ /settime ЧЧ:ММ"); return
-        h, m = map(int, parts[1].split(":"))
+        cmd_parts = text.split()
+        if len(cmd_parts) < 2 or not re.match(r'^\d{1,2}:\d{2}$', cmd_parts[1]): await send_safe(ADMIN_ID, "❌ /settime ЧЧ:ММ"); return
+        h, m = map(int, cmd_parts[1].split(":"))
         if not (0 <= h <= 23 and 0 <= m <= 59): await send_safe(ADMIN_ID, "❌ 0-23, 0-59."); return
         s = load_settings(); s["send_hour"], s["send_minute"] = h, m; save_settings(s)
         await send_safe(ADMIN_ID, f"✅ Сводка в {h:02d}:{m:02d} МСК")
 
     elif text.startswith("/mood"):
-        parts = text.split()
-        if len(parts) < 2: await send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood', 'hard')}\nlight/medium/hard/ultra"); return
-        mood = parts[1].lower()
+        cmd_parts = text.split()
+        if len(cmd_parts) < 2: await send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood', 'hard')}\nlight/medium/hard/ultra"); return
+        mood = cmd_parts[1].lower()
         if mood not in MOOD_STYLES: await send_safe(ADMIN_ID, "❌ light, medium, hard, ultra"); return
         s = load_settings(); s["mood"] = mood; save_settings(s)
         await send_safe(ADMIN_ID, f"✅ {mood.upper()}")
 
     elif text.startswith("/raid_timer"):
-        parts = text.split()
-        if len(parts) < 3: await send_safe(ADMIN_ID, "❌ /raid_timer МИН МАКС"); return
+        cmd_parts = text.split()
+        if len(cmd_parts) < 3: await send_safe(ADMIN_ID, "❌ /raid_timer МИН МАКС"); return
         try:
-            mn, mx = float(parts[1]), float(parts[2])
+            mn, mx = float(cmd_parts[1]), float(cmd_parts[2])
             if mn <= 0 or mx <= 0 or mn > mx: raise ValueError
         except ValueError: await send_safe(ADMIN_ID, "❌ Положительные, МИН ≤ МАКС."); return
         s = load_settings(); s["raid_min_hours"], s["raid_max_hours"] = mn, mx; save_settings(s)
         await send_safe(ADMIN_ID, f"✅ Интервал рейдов: {mn}-{mx} ч.")
 
     elif text.startswith("/raid"):
-        parts = text.split()
-        if len(parts) > 1 and parts[1] == "now":
-            cid = int(parts[2]) if len(parts) > 2 else (load_chats() or [None])[0]
+        cmd_parts = text.split()
+        if len(cmd_parts) > 1 and cmd_parts[1] == "now":
+            cid = int(cmd_parts[2]) if len(cmd_parts) > 2 else (load_chats() or [None])[0]
             if not cid: await send_safe(ADMIN_ID, "❌ Нет чатов."); return
             await send_raid(cid); await send_safe(ADMIN_ID, f"🤬 Рейд в {cid}!")
         else:
@@ -487,27 +547,27 @@ async def process_admin_command(update):
             await send_safe(ADMIN_ID, f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}\n/raid on|off|now")
 
     elif text.startswith("/test"):
-        parts = text.split()
-        cid = int(parts[1]) if len(parts) > 1 else (load_chats() or [None])[0]
-        cnt = int(parts[2]) if len(parts) > 2 else 10
+        cmd_parts = text.split()
+        cid = int(cmd_parts[1]) if len(cmd_parts) > 1 else (load_chats() or [None])[0]
+        cnt = int(cmd_parts[2]) if len(cmd_parts) > 2 else 10
         if not cid: await send_safe(ADMIN_ID, "❌ Нет чатов."); return
         msgs = daily_messages.get(cid, [])[-min(cnt, len(daily_messages.get(cid, []))):]
         if not msgs: await send_safe(ADMIN_ID, "❌ Нет сообщений."); return
         if len(msgs) > 30: msgs = filter_important_messages(msgs, 30)
         log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in msgs)
         await send_safe(ADMIN_ID, f"🧪 Сводка ({len(msgs)} сообщений)...")
-        result = generate_zyablograf(log, cid)
+        result = await generate_zyablograf(log, cid)
         greeting = get_greeting()
         formatted = format_for_telegram(result)
         full = f"{greeting}\n\n{formatted}"
         if len(full) <= 4000:
             await send_safe(ADMIN_ID, full, parse_mode="MarkdownV2")
         else:
-            parts = split_by_paragraphs(formatted, 3900)
-            for i, part in enumerate(parts):
+            test_parts = split_by_paragraphs(formatted, 3900)
+            for i, part in enumerate(test_parts):
                 msg = f"{greeting}\n\n{part}" if i == 0 else part
                 await send_safe(ADMIN_ID, msg, parse_mode="MarkdownV2")
-                if i < len(parts) - 1:
+                if i < len(test_parts) - 1:
                     await asyncio.sleep(1)
 
     elif text.startswith("/status"):
@@ -517,14 +577,17 @@ async def process_admin_command(update):
         for cid, msgs in daily_messages.items():
             lines.append(f"  Чат {cid}: {len(msgs)} сообщений"); total += len(msgs)
         if not daily_messages: lines.append("  Пусто.")
-        lines += [f"\nВсего: {total}", f"Время: {s['send_hour']:02d}:{s['send_minute']:02d} МСК", f"Мат: {s.get('mood', 'hard').upper()}", f"Словарь: {get_dict_stats()}", f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}"]
+        lines += [f"\nВсего: {total}", f"Время: {s['send_hour']:02d}:{s['send_minute']:02d} МСК",
+                  f"Мат: {s.get('mood', 'hard').upper()}", f"Словарь: {get_dict_stats()}",
+                  f"Наезды: {'вкл' if s.get('raid_enabled', True) else 'выкл'}"]
         await send_safe(ADMIN_ID, "\n".join(lines))
 
     elif text.startswith("/reset"):
-        parts = text.split()
-        cid = int(parts[1]) if len(parts) > 1 else None
+        cmd_parts = text.split()
+        cid = int(cmd_parts[1]) if len(cmd_parts) > 1 else None
         if cid: daily_messages[cid] = []; reactions[cid] = []
         else: daily_messages.clear(); reactions.clear()
+        save_messages_to_disk()
         await send_safe(ADMIN_ID, "🗑️ Сброшено.")
 
     elif text.startswith("/backup"):
@@ -554,18 +617,24 @@ async def process_admin_command(update):
 
 # ========== ПЛАНИРОВЩИКИ ==========
 async def scheduler():
+    last_sent_date = None
     while True:
         s = load_settings()
         now = msk_now()
+        today = now.date()
         target = now.replace(hour=s["send_hour"], minute=s["send_minute"], second=0, microsecond=0)
-        if now >= target:
-            logger.info(f"Дайджест запущен ({target.strftime('%H:%M')} МСК прошло)")
+
+        if now >= target and last_sent_date != today:
+            logger.info(f"Дайджест запущен ({target.strftime('%H:%M')} МСК)")
             await send_daily_zyablograf()
+            last_sent_date = today
             target += timedelta(days=1)
+
         sleep_sec = (target - msk_now()).total_seconds()
-        if sleep_sec > 0:
-            logger.info(f"Сон до {target.strftime('%H:%M')} МСК ({sleep_sec:.0f} с)")
-            await asyncio.sleep(sleep_sec)
+        if sleep_sec <= 0:
+            sleep_sec = 60
+        logger.info(f"Сон до {target.strftime('%H:%M')} МСК ({sleep_sec:.0f} с)")
+        await asyncio.sleep(sleep_sec)
 
 async def raid_scheduler():
     while True:
@@ -579,7 +648,11 @@ async def raid_scheduler():
 # ========== ЗАПУСК ==========
 async def main():
     logger.info("Зяблограф запущен!")
-    for cid in load_chats(): daily_messages.setdefault(cid, []); reactions.setdefault(cid, [])
+    # Восстанавливаем сообщения с диска
+    load_messages_from_disk()
+    for cid in load_chats():
+        daily_messages.setdefault(cid, [])
+        reactions.setdefault(cid, [])
     asyncio.create_task(scheduler())
     asyncio.create_task(raid_scheduler())
     offset = None
