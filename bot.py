@@ -7,7 +7,7 @@ import asyncio
 import random
 from datetime import datetime, timedelta, timezone
 
-from groq import Groq
+from groq import Groq, BadRequestError
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -19,10 +19,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Токен бота не найден! Укажи его в поле «Токен» на Bothost.")
 
-CHATS_FILE = "chats.json"
-NAMES_FILE = "names.json"
-SETTINGS_FILE = "settings.json"
 DICT_FILE = "dictionary.json"
+BOT_SETTINGS_KEY = "BOT_SETTINGS"  # Ключ переменной окружения для всех настроек
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 bot = Bot(token=BOT_TOKEN)
@@ -62,6 +60,59 @@ def get_dict_stats() -> str:
     total = sum(len(v) for v in SWEAR_DICT.values())
     parts = [f"{k}: {len(v)}" for k, v in SWEAR_DICT.items()]
     return f"{total} слов ({', '.join(parts)})"
+
+# ========== ХРАНЕНИЕ НАСТРОЕК В ПЕРЕМЕННОЙ ОКРУЖЕНИЯ ==========
+def load_all_data():
+    """Загружает все настройки из BOT_SETTINGS (переменная окружения)."""
+    raw = os.getenv(BOT_SETTINGS_KEY, "{}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("BOT_SETTINGS повреждён, начинаю с нуля")
+        return {}
+
+def save_all_data(data):
+    """Сохраняет все настройки в BOT_SETTINGS."""
+    os.environ[BOT_SETTINGS_KEY] = json.dumps(data, ensure_ascii=False)
+
+def load_chats():
+    return load_all_data().get("chats", [])
+
+def save_chats(chats):
+    data = load_all_data()
+    data["chats"] = chats
+    save_all_data(data)
+
+def load_names():
+    return load_all_data().get("names", {})
+
+def save_names(names):
+    data = load_all_data()
+    data["names"] = names
+    save_all_data(data)
+
+def load_settings():
+    defaults = {
+        "send_hour": 21, "send_minute": 0, "mood": "hard",
+        "raid_enabled": True,
+        "raid_min_hours": 2, "raid_max_hours": 12,
+        "custom_main_prompt": None, "custom_raid_prompt": None
+    }
+    stored = load_all_data().get("settings", {})
+    # Слияние с дефолтами — если чего-то нет, подставится
+    return {**defaults, **stored}
+
+def save_settings(settings):
+    data = load_all_data()
+    data["settings"] = settings
+    save_all_data(data)
+
+def get_display_name(user) -> str:
+    names = load_names()
+    uid = str(user.id)
+    if uid in names and "name" in names[uid]:
+        return names[uid]["name"]
+    return user.first_name or user.username or "Анон"
 
 # ========== ИНЖЕКЦИЯ СЛОВ ==========
 def inject_smart_words(prompt: str, chat_id=None) -> str:
@@ -138,59 +189,74 @@ def get_greeting() -> str:
 def get_mood_style(mood: str) -> str:
     return MOOD_STYLES.get(mood, MOOD_STYLES["hard"])
 
-# ========== БЕЗОПАСНАЯ ОТПРАВКА ==========
+# ========== ЭКРАНИРОВАНИЕ MARKDOWNV2 ==========
+def escape_markdown(text: str) -> str:
+    """Экранирует спецсимволы MarkdownV2, кроме уже экранированных."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    # Не экранируем то, что уже экранировано (\_)
+    result = []
+    i = 0
+    while i < len(text):
+        if text[i] == '\\' and i + 1 < len(text) and text[i+1] in escape_chars:
+            result.append(text[i:i+2])
+            i += 2
+        elif text[i] in escape_chars:
+            result.append('\\' + text[i])
+            i += 1
+        else:
+            result.append(text[i])
+            i += 1
+    return ''.join(result)
+
+# ========== УМНОЕ ДЕЛЕНИЕ ДЛИННЫХ СООБЩЕНИЙ ==========
+def split_by_paragraphs(text: str, max_len: int = 4000) -> list:
+    if len(text) <= max_len:
+        return [text]
+    paragraphs = text.split("\n\n")
+    parts = []
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 <= max_len:
+            current = (current + "\n\n" + para).strip()
+        else:
+            if current:
+                parts.append(current)
+                current = ""
+            if len(para) > max_len:
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                for sentence in sentences:
+                    if len(current) + len(sentence) + 2 <= max_len:
+                        current = (current + " " + sentence).strip()
+                    else:
+                        if current:
+                            parts.append(current)
+                        current = sentence
+            else:
+                current = para
+    if current:
+        parts.append(current)
+    return parts
+
+# ========== БЕЗОПАСНАЯ ОТПРАВКА С АВТОЭКРАНИРОВАНИЕМ ==========
 async def send_safe(chat_id, text, parse_mode=None, thread_id=1):
-    """Отправляет сообщение в чат, принудительно в основную ветку (thread_id=1)."""
+    """Отправляет сообщение с автоэкранированием MarkdownV2."""
     try:
+        if parse_mode == "MarkdownV2":
+            text = escape_markdown(text)
         return await bot.send_message(chat_id, text, parse_mode=parse_mode, message_thread_id=thread_id)
     except TelegramError as e:
-        if parse_mode:
-            logger.warning(f"Markdown error: {e}")
+        if "message_thread_id" in str(e).lower() or "thread" in str(e).lower():
+            logger.warning(f"Ошибка с thread_id, пробую без: {e}")
+            try:
+                return await bot.send_message(chat_id, text, parse_mode=parse_mode)
+            except TelegramError as e2:
+                logger.error(f"Ошибка отправки: {e2}")
+                return None
+        elif parse_mode:
+            logger.warning(f"Ошибка Markdown, пробую без форматирования: {e}")
             return await bot.send_message(chat_id, text, message_thread_id=thread_id)
         else:
             raise
-
-# ========== РАБОТА С ФАЙЛАМИ ==========
-def load_json(path, default):
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def load_chats():
-    return load_json(CHATS_FILE, [])
-
-def save_chats(chats):
-    save_json(CHATS_FILE, chats)
-
-def load_names():
-    return load_json(NAMES_FILE, {})
-
-def save_names(names):
-    save_json(NAMES_FILE, names)
-
-def load_settings():
-    return load_json(SETTINGS_FILE, {
-        "send_hour": 21, "send_minute": 0, "mood": "hard",
-        "raid_enabled": True,
-        "raid_min_hours": 2, "raid_max_hours": 12,
-        "custom_main_prompt": None, "custom_raid_prompt": None
-    })
-
-def save_settings(settings):
-    save_json(SETTINGS_FILE, settings)
-
-def get_display_name(user) -> str:
-    names = load_names()
-    uid = str(user.id)
-    if uid in names and "name" in names[uid]:
-        return names[uid]["name"]
-    return user.first_name or user.username or "Анон"
 
 # ========== ОПИСАНИЕ ФОТО (GROQ VISION) ==========
 async def describe_photo(file_id: str) -> str:
@@ -216,6 +282,9 @@ async def describe_photo(file_id: str) -> str:
         description = completion.choices[0].message.content.strip()
         logger.info(f"Фото описано (Groq): {description[:80]}...")
         return f"[ФОТО: {description}]"
+    except BadRequestError as e:
+        logger.error(f"BadRequestError Vision: {e}")
+        return "[ФОТО: модель временно недоступна]"
     except Exception as e:
         logger.error(f"Ошибка фото Groq: {type(e).__name__}: {e}")
         return "[ФОТО: не удалось описать]"
@@ -252,16 +321,34 @@ def build_raid_prompt(chat_id=None):
     prompt = custom.replace("{mood_style}", mood) if custom else DEFAULT_RAID_PROMPT.replace("{mood_style}", mood)
     return inject_smart_words(prompt, chat_id)
 
+def generate_zyablograf(chat_log: str, chat_id=None) -> str:
+    prompt = build_main_prompt(chat_id) + chat_log
+    return _call_groq(prompt, max_tokens=8000)
+
+def generate_raid(chat_log: str, chat_id=None) -> str:
+    prompt = build_raid_prompt(chat_id) + chat_log
+    return _call_groq(prompt, max_tokens=2000, temperature=1.0)
+
 def _call_groq(prompt, max_tokens=6000, temperature=0.95):
-    for model in ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]:
-        try:
-            completion = groq_client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt}],
-                temperature=temperature, max_tokens=max_tokens
-            )
-            return clean_output(completion.choices[0].message.content)
-        except Exception as e:
-            logger.error(f"Ошибка {model}: {e}")
+    """Вызов Groq с экспоненциальным backoff."""
+    models = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
+    for model in models:
+        for attempt in range(3):
+            try:
+                completion = groq_client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature, max_tokens=max_tokens
+                )
+                return clean_output(completion.choices[0].message.content)
+            except Exception as e:
+                wait = 2 ** attempt
+                logger.warning(f"Попытка {attempt+1} для {model}: {e}. Жду {wait}с...")
+                if attempt < 2:
+                    import time
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Модель {model} недоступна после 3 попыток")
+        # Пробуем следующую модель
     return "Зяблограф обосрался. Технический пиздец."
 
 def clean_output(text):
@@ -279,7 +366,6 @@ async def handle_message(message):
     if chat_id not in load_chats():
         return
 
-    # Реакции на бота
     if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
         author = get_display_name(message.from_user)
         txt = message.text or message.caption or "[без текста]"
@@ -308,18 +394,34 @@ async def handle_message(message):
 async def send_daily_zyablograf():
     for chat_id in load_chats():
         msgs = daily_messages.get(chat_id, [])
-        if not msgs: continue
+        if not msgs:
+            continue
         important = filter_important_messages(msgs, 30)
         log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in important)
         result = generate_zyablograf(log, chat_id)
-        final = f"{get_greeting()}\n\n{format_for_telegram(result)}"
-        await send_safe(chat_id, final, parse_mode="MarkdownV2", thread_id=1)
+        greeting = get_greeting()
+        formatted_body = format_for_telegram(result)
+        full_text = f"{greeting}\n\n{formatted_body}"
+
+        MAX_MSG_LEN = 4000
+        if len(full_text) <= MAX_MSG_LEN:
+            await send_safe(chat_id, full_text, parse_mode="MarkdownV2", thread_id=1)
+        else:
+            logger.info(f"Сводка длинная ({len(full_text)} символов), делю на части...")
+            parts = split_by_paragraphs(formatted_body, MAX_MSG_LEN - 100)
+            for i, part in enumerate(parts):
+                msg = f"{greeting}\n\n{part}" if i == 0 else part
+                await send_safe(chat_id, msg, parse_mode="MarkdownV2", thread_id=1)
+                if i < len(parts) - 1:
+                    await asyncio.sleep(1)
+
         daily_messages[chat_id] = []
         reactions[chat_id] = []
 
 async def send_raid(chat_id):
     msgs = daily_messages.get(chat_id, [])
-    if len(msgs) < 10: return
+    if len(msgs) < 10:
+        return
     important = filter_important_messages(msgs, 20)
     log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in important)
     result = generate_raid(log, chat_id)
@@ -395,7 +497,18 @@ async def process_admin_command(update):
         log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in msgs)
         await send_safe(ADMIN_ID, f"🧪 Сводка ({len(msgs)} сообщений)...")
         result = generate_zyablograf(log, cid)
-        await send_safe(ADMIN_ID, f"{get_greeting()}\n\n{format_for_telegram(result)}", parse_mode="MarkdownV2")
+        greeting = get_greeting()
+        formatted = format_for_telegram(result)
+        full = f"{greeting}\n\n{formatted}"
+        if len(full) <= 4000:
+            await send_safe(ADMIN_ID, full, parse_mode="MarkdownV2")
+        else:
+            parts = split_by_paragraphs(formatted, 3900)
+            for i, part in enumerate(parts):
+                msg = f"{greeting}\n\n{part}" if i == 0 else part
+                await send_safe(ADMIN_ID, msg, parse_mode="MarkdownV2")
+                if i < len(parts) - 1:
+                    await asyncio.sleep(1)
 
     elif text.startswith("/status"):
         s = load_settings()
