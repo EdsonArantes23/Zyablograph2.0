@@ -20,7 +20,7 @@ if not BOT_TOKEN:
     raise RuntimeError("Токен бота не найден! Укажи его в поле «Токен» на Bothost.")
 
 DICT_FILE = "dictionary.json"
-MESSAGES_FILE = "daily_messages.json"   # файл для хранения сообщений на диске
+MESSAGES_FILE = "daily_messages.json"
 BOT_SETTINGS_KEY = "BOT_SETTINGS"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -38,11 +38,7 @@ def msk_now():
     return datetime.now(MSK_TZ)
 
 # ========== СОХРАНЕНИЕ СООБЩЕНИЙ НА ДИСК ==========
-# Теперь все накопленные сообщения хранятся в файле daily_messages.json.
-# При перезапуске бота они восстанавливаются — ничего не теряется.
-
 def save_messages_to_disk():
-    """Сохраняет daily_messages и reactions на диск."""
     try:
         data = {
             "messages": {str(k): v for k, v in daily_messages.items()},
@@ -54,7 +50,6 @@ def save_messages_to_disk():
         logger.error(f"Ошибка сохранения сообщений на диск: {e}")
 
 def load_messages_from_disk():
-    """Загружает daily_messages и reactions с диска при старте."""
     global daily_messages, reactions
     try:
         with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
@@ -220,7 +215,7 @@ def get_mood_style(mood: str) -> str:
 
 # ========== ЭКРАНИРОВАНИЕ MARKDOWNV2 ==========
 def escape_markdown(text: str) -> str:
-    """Экранирует спецсимволы MarkdownV2, сохраняя ссылки [текст](url) нетронутыми."""
+    """Экранирует спецсимволы MarkdownV2, сохраняя ссылки нетронутыми."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     link_pattern = re.compile(r'(\[.*?\]\(https?://[^\)]+\))')
     parts = link_pattern.split(text)
@@ -273,9 +268,8 @@ def split_by_paragraphs(text: str, max_len: int = 4000) -> list:
         parts.append(current)
     return parts
 
-# ========== БЕЗОПАСНАЯ ОТПРАВКА С АВТОЭКРАНИРОВАНИЕМ ==========
+# ========== БЕЗОПАСНАЯ ОТПРАВКА ==========
 async def send_safe(chat_id, text, parse_mode=None, thread_id=1):
-    """Отправляет сообщение с автоэкранированием MarkdownV2."""
     try:
         if parse_mode == "MarkdownV2":
             text = escape_markdown(text)
@@ -294,10 +288,8 @@ async def send_safe(chat_id, text, parse_mode=None, thread_id=1):
         else:
             raise
 
-# ========== ОПИСАНИЕ ФОТО (GROQ VISION) ==========
-# Обновлена модель на актуальную llama-4-scout — бесплатная, поддерживает изображения.
+# ========== ОПИСАНИЕ ФОТО ==========
 async def describe_photo(file_id: str) -> str:
-    """Скачивает фото и отправляет в Groq Vision."""
     try:
         file = await bot.get_file(file_id)
         image_bytes = await file.download_as_bytearray()
@@ -363,7 +355,6 @@ def build_raid_prompt(chat_id=None):
     return inject_smart_words(prompt, chat_id)
 
 async def _call_groq(prompt, max_tokens=6000, temperature=0.95):
-    """Вызов Groq с экспоненциальным backoff (async-безопасный)."""
     models = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
     loop = asyncio.get_event_loop()
     for model in models:
@@ -386,9 +377,8 @@ async def _call_groq(prompt, max_tokens=6000, temperature=0.95):
                     await asyncio.sleep(wait)
                 else:
                     logger.error(f"Модель {model} недоступна после 3 попыток")
-    # Уведомляем админа если все модели упали
     try:
-        await bot.send_message(ADMIN_ID, "⚠️ Зяблограф не смог сгенерировать текст — Groq недоступен. Все модели упали.")
+        await bot.send_message(ADMIN_ID, "⚠️ Зяблограф не смог сгенерировать текст — Groq недоступен.")
     except Exception:
         pass
     return "Зяблограф обосрался. Технический пиздец."
@@ -416,7 +406,6 @@ async def handle_message(message):
     if chat_id not in load_chats():
         return
 
-    # Защита от from_user=None (каналы, некоторые боты)
     if message.from_user is None:
         return
 
@@ -445,7 +434,6 @@ async def handle_message(message):
         "link": link, "author": author, "text": text.strip(),
         "user_id": message.from_user.id
     })
-    # Сохраняем на диск после каждого нового сообщения
     save_messages_to_disk()
 
 # ========== ОТПРАВКА ДАЙДЖЕСТОВ И РЕЙДОВ ==========
@@ -473,7 +461,6 @@ async def send_daily_zyablograf():
                 if i < len(msg_parts) - 1:
                     await asyncio.sleep(1)
 
-        # Очищаем сообщения после отправки дайджеста
         daily_messages[chat_id] = []
         reactions[chat_id] = []
         save_messages_to_disk()
@@ -648,7 +635,7 @@ async def raid_scheduler():
 # ========== ЗАПУСК ==========
 async def main():
     logger.info("Зяблограф запущен!")
-    # Восстанавливаем сообщения с диска
+    await bot.initialize()
     load_messages_from_disk()
     for cid in load_chats():
         daily_messages.setdefault(cid, [])
