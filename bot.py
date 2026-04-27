@@ -325,11 +325,19 @@ async def describe_photo(file_id: str) -> str:
 # ========== ФИЛЬТРАЦИЯ ==========
 def filter_important_messages(messages, max_to_select=30):
     important = []
-    hot_patterns = [
-        r'(?i)\b(?:бля|хуй|пизд|еба|сука|нах|сос|чмо|пидр|гандон|долб|муда|скотин|говн|жоп|сра|сса|перд|дрис)\w*\b',
-        r'/\w+', r'@\w+', r'https?://', r'[ФОТО:', r'(?i)\b(?:почему|кто|где|когда|зачем|какого)\b',
+    hot_words = [
+        r'\b(?:бля|хуй|пизд|еба|сука|нах|сос|чмо|пидр|гандон|долб|муда|скотин|говн|жоп|сра|сса|перд|дрис)\w*\b',
     ]
-    combined = re.compile('|'.join(hot_patterns))
+    hot_patterns = [
+        r'/\w+',
+        r'@\w+',
+        r'https?://',
+        r'\[ФОТО:',
+        r'\b(?:почему|кто|где|когда|зачем|какого)\b',
+    ]
+    all_patterns = hot_words + hot_patterns
+    combined = re.compile('|'.join(all_patterns), re.IGNORECASE)
+
     for msg in messages:
         if len(important) >= max_to_select:
             break
