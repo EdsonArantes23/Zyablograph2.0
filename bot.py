@@ -393,7 +393,14 @@ def build_raid_prompt(chat_id: int | None = None) -> str:
 
 
 async def _call_groq(prompt: str, max_tokens: int = 6000, temperature: float = 0.95) -> str:
-    models = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
+    models = [
+        "llama-3.3-70b-versatile",
+        "gemma2-9b-it",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "llama-guard-3-8b",
+        "gemma-7b-it",
+    ]
     loop = asyncio.get_event_loop()
     for model in models:
         for attempt in range(3):
@@ -409,14 +416,24 @@ async def _call_groq(prompt: str, max_tokens: int = 6000, temperature: float = 0
                 )
                 return clean_output(completion.choices[0].message.content)
             except Exception as e:
+                error_str = str(e)
+                if "rate_limit" in error_str or "429" in error_str:
+                    wait = 5 * (attempt + 1)
+                    logger.warning(f"Лимит {model}, жду {wait}с...")
+                    await asyncio.sleep(wait)
+                    continue
+                if "decommissioned" in error_str or "invalid" in error_str:
+                    logger.warning(f"Модель {model} недоступна, пропускаю.")
+                    break
                 wait = 2 ** attempt
                 logger.warning(f"Попытка {attempt + 1} для {model}: {e}. Жду {wait}с...")
                 if attempt < 2:
                     await asyncio.sleep(wait)
                 else:
                     logger.error(f"Модель {model} недоступна после 3 попыток")
+            break
     try:
-        await bot.send_message(ADMIN_ID, "⚠️ Зяблограф не смог сгенерировать текст — Groq недоступен.")
+        await bot.send_message(ADMIN_ID, "⚠️ Зяблограф не смог сгенерировать текст — все модели Groq недоступны.")
     except Exception:
         pass
     return "Зяблограф обосрался. Технический пиздец."
@@ -709,8 +726,7 @@ async def process_admin_command(update) -> None:
         s = load_settings()
         await send_safe(ADMIN_ID, f"""🛠 ЗЯБЛОГРАФ
 📝 /prompt_show|set|reset main|raid
-📋 /add_chat|remove_chat|list_chats
-🏷️ /setname|removename|list_names
+📋 /add_chat|remove_chat|list_chats🏷️ /setname|removename|list_names
 ⏰ /settime ЧЧ:ММ (МСК) ({s['send_hour']:02d}:{s['send_minute']:02d})
 🔥 /mood light|medium|hard|ultra
 🤬 /raid on|off|now
