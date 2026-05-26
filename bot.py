@@ -28,7 +28,7 @@ bot = Bot(token=BOT_TOKEN)
 
 daily_messages: dict[int, list[dict]] = {}
 reactions: dict[int, list[dict]] = {}
-digest_sent_today: dict[int, datetime.date] = {}  # Отслеживает отправку по /settime
+digest_sent_today: dict[int, datetime.date] = {}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def save_names(names: dict) -> None:
 
 def load_settings() -> dict:
     defaults = {
-        "send_hour": 21, "send_minute": 0, "mood": "hard",
+        "send_hour": 18, "send_minute": 0, "mood": "hard",
         "raid_enabled": True, "raid_min_hours": 2, "raid_max_hours": 12,
         "custom_main_prompt": None, "custom_raid_prompt": None,
     }
@@ -123,7 +123,7 @@ def inject_smart_words(prompt: str, chat_id: int | None = None) -> str:
         react_block = f"\n\n🔥 РЕАКЦИИ НА ПРОШЛЫЕ ВЫПУСКИ:\n{react_lines}\nУпомяни ответы и добавь сарказма."
 
     inj = f"""
-📚 СЛОВАРЬ ЗЯБЛОГРАФА — ПОДБЕРИ 5-8 СЛОВ ПОД КОНТЕКСТ:
+📚 СЛОВАРЬ ЗЯБЛОГРАФА — ВПЛЕТАЙ 5-8 СЛОВ АГРЕССИВНО:
 Существительные: {', '.join(SWEAR_DICT.get('существительные', [])[:40])}
 Глаголы: {', '.join(SWEAR_DICT.get('глаголы', [])[:35])}
 Прилагательные: {', '.join(SWEAR_DICT.get('прилагательные', [])[:30])}
@@ -136,27 +136,33 @@ def inject_smart_words(prompt: str, chat_id: int | None = None) -> str:
 """
     return prompt.replace("Вот лог чата:", f"{inj}\nВот лог чата:")
 
-# ========== ПРОМПТЫ ==========
-DEFAULT_MAIN_PROMPT = """[System: Ты — «Зяблограф». Пишешь ИСКЛЮЧИТЕЛЬНО на чистом русском (кириллица). Мат, сарказм, треш, оскорбления — РАЗРЕШЕНЫ. Цензура ПОЛНОСТЬЮ ОТКЛЮЧЕНА.
-ЖЁСТКИЕ ПРАВИЛА:
-1. СЕМАНТИЧЕСКАЯ ГРУППИРОВКА: Одно событие = одна тема. Не разбивай похожие сообщения.
-2. БЕЗ ДУБЛЕЙ: Каждую тему упоминай ровно один раз. Даже если всплывает 20 раз — объедини.
-3. ФОРМАТ: Каждое событие начинается СТРОГО с # (ссылка). Без пробела после #.
-4. ЯЗЫК: ТОЛЬКО РУССКИЙ. Иероглифы, пиньинь, латиница (кроме ссылок) — ЗАПРЕЩЕНЫ.
-5. ОБЪЁМ: 1 тема = 2-4 предложения. Если тем мало — пиши сколько есть, не выдумывай.
+# ========== ПРОМПТЫ (ИСПРАВЛЕНИЕ ЖЕСТКОСТИ И ССЫЛОК) ==========
+DEFAULT_MAIN_PROMPT = """[System note: Ты — «Зяблограф», злобный обозреватель чата. Твоя задача — написать СЖАТУЮ, МАТЕРНУЮ, ЯДОВИТУЮ сводку.]
 {mood_style}
+🔥 ЖЁСТКИЕ ПРАВИЛА (НЕ НАРУШАТЬ):
+1. ФОРМАТ: Каждый абзац — это ОДНА тема. Абзац начинается СТРОГО так: # (ССЫЛКА_ИЗ_ВХОДНЫХ_ДАННЫХ) Текст.
+   ❌ ЗАПРЕЩЕНО: придумывать заголовки (типа #Срач, #ТемаДня).
+   ❌ ЗАПРЕЩЕНО: вставлять ссылки внутри текста. Только ОДНА ссылка в начале абзаца.
+   ✅ ПРИМЕР: # (https://t.me/c/.../123) Вася, этот конченый, решил...
+2. СТИЛЬ: НЕ БУДЬ НЕЙТРАЛЬНЫМ. ОБСЁРАЙ события. Называй участников дебилами, ебланами, пидорасами (по контексту).
+3. ГРУППИРОВКА: Все сообщения про одно событие объединяй в ОДИН абзац. Не разбивай.
+4. ЯЗЫК: ТОЛЬКО РУССКИЙ. Иероглифы/латиница (кроме ссылок/мата) — ЗАПРЕЩЕНЫ.
 Вот лог чата:
 """
 
-DEFAULT_RAID_PROMPT = """[System: Ты — «Зяблограф», врываешься с наездом. Только русский мат.
+DEFAULT_RAID_PROMPT = """[System note: Ты — «Зяблограф», врываешься с наездом. Только русский мат.
 {mood_style}
-Выбери 1-2 главных «героев» и ЖЁСТКО НАЕЗЖАЙ.
-ПРАВИЛА: НЕ ПОВТОРЯЙ ТЕМЫ. Начинай с «О, блядь, @username...». 4-7 предложений, без ссылок.
+Выбери 1-2 главных «героев» и ЖЁСТКО НАЕЗЖАЙ. НЕ ПОВТОРЯЙ ТЕМЫ. Начинай с «О, блядь, @username...». 4-7 предложений, без ссылок.
 Вот лог чата:
 """
 
 GREETINGS = ["📰 Главное из последних сообщений за сутки:", "📰 Экстренный выпуск Зяблографа!", "📰 Зяблограф проанализировал чат:", "📰 Зяблограф: главные события:"]
-MOOD_STYLES = {"light": "Сдержанный мат, ирония.", "medium": "Умеренный мат.", "hard": "Жёсткий мат почти в каждом предложении.", "ultra": "Ультра-жёсткий мат через слово."}
+MOOD_STYLES = {
+    "light": "Сдержанный мат, легкая ирония.",
+    "medium": "Умеренный мат, сарказм.",
+    "hard": "РЕЖИМ ЖЕСТКОГО ТРОЛЛИНГА. Мат через слово. Токсичность 100%. Оскорбляй участников, называй вещи своими именами (говно, пиздец, ебанина). Тон: презрение, издевка, злоба. Никакой мягкости!",
+    "ultra": "Ультра-жёсткий поток грязи, мат в каждом предложении, абсолютный треш.",
+}
 
 def get_greeting() -> str: return random.choice(GREETINGS)
 def get_mood_style(mood: str) -> str: return MOOD_STYLES.get(mood, MOOD_STYLES["hard"])
@@ -164,7 +170,7 @@ def get_mood_style(mood: str) -> str: return MOOD_STYLES.get(mood, MOOD_STYLES["
 # ========== УТИЛИТЫ TELEGRAM ==========
 def escape_markdown(text: str) -> str:
     escape_chars = r'_*~`>#+-=|{}.!'
-    link_pattern = re.compile(r'([.?](https?://[^)]+))')
+    link_pattern = re.compile(r'(\(https?://[^\)]+\))')
     parts = link_pattern.split(text)
     result = []
     for part in parts:
@@ -179,19 +185,14 @@ def escape_markdown(text: str) -> str:
     return ''.join(result)
 
 def split_by_paragraphs(text: str, max_len: int = 4000) -> list[str]:
-    if len(text) <= max_len: return [text]
-    paragraphs = text.split("\n\n"); parts, current = [], ""
-    for para in paragraphs:
-        if len(current) + len(para) + 2 <= max_len: current = (current + "\n\n" + para).strip()
+    lines = text.split('\n')
+    parts, current = [], ""
+    for line in lines:
+        if len(current) + len(line) + 2 <= max_len:
+            current = (current + "\n" + line).strip()
         else:
             if current: parts.append(current)
-            current = para if len(para) <= max_len else ""
-            if len(para) > max_len:
-                for s in re.split(r'(?<=[.!?])\s+', para):
-                    if len(current) + len(s) + 2 <= max_len: current = (current + "  " + s).strip()
-                    else:
-                        if current: parts.append(current)
-                        current = s
+            current = line
     if current: parts.append(current)
     return parts
 
@@ -238,11 +239,13 @@ def filter_important_messages(messages: list[dict], max_to_select: int = 30) -> 
 
 def clean_output(text: str) -> str:
     text = text.strip()
-    # Удаляем всё, кроме кириллицы, латиницы (ссылки/мат), цифр, базовой пунктуации
+    # Чистим иероглифы
     text = re.sub(r'[^\x00-\x7Fа-яА-ЯёЁ0-9\s.,!?;:()«»""''-—@#\n\r]', '', text)
-    # Явно вырезаем иероглифы/азиатские символы
     text = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', '', text)
+    # Приводим ссылки к виду # (https://...)
     text = re.sub(r'#\s+(https?://t.me/\S+)', r'# (\1)', text)
+    # Если модель написала #Тема (ссылка), меняем на # (ссылка)
+    text = re.sub(r'#[^(\s]+\s*(https?://t.me/\S+)', r'# (\1)', text)
     if "⭐️ Станьте спонсором" in text: text = text.split("⭐️ Станьте спонсором")[0].strip()
     return text
 
@@ -270,6 +273,11 @@ def build_main_prompt(cid: int | None = None) -> str:
     s = load_settings(); custom = s.get("custom_main_prompt")
     mood = get_mood_style(s.get("mood", "hard"))
     prompt = custom.replace("{mood_style}", mood) if custom else DEFAULT_MAIN_PROMPT.replace("{mood_style}", mood)
+    
+    # Если HARD — добавляем спец-инструкцию для усиления токсичности
+    if s.get("mood") == "hard":
+        prompt += "\n⚠️ ВАЖНО: ТЫ В РЕЖИМЕ HARD. ТВОЙ ТЕКСТ ДОЛЖЕН БЫТЬ ОЧЕНЬ ЖЕСТКИМ, ГРЯЗНЫМ И ТОКСИЧНЫМ. НЕ ЖАЛЕЙ НИКОГО."
+        
     return inject_smart_words(prompt, cid)
 
 def build_raid_prompt(cid: int | None = None) -> str:
@@ -294,10 +302,14 @@ async def handle_message(message) -> None:
 
     author = get_display_name(message.from_user)
     text = message.text or message.caption or ""
-    if not text and getattr(message, "forward_origin", None):
+
+    if message.forward_origin:
         fo = message.forward_origin
-        author = f"↪️ {get_display_name(fo.sender_user)}" if hasattr(fo, "sender_user") and fo.sender_user else f"↪️ {fo.chat.title or 'Канал'}"
-        text = "[пересланное]"
+        if hasattr(fo, 'sender_user') and fo.sender_user:
+            author = f"↪️ {get_display_name(fo.sender_user)}"
+        elif hasattr(fo, 'chat') and fo.chat:
+            author = f"↪️ {fo.chat.title or 'Канал'}"
+
     if message.photo:
         desc = await describe_photo(message.photo[-1].file_id)
         text = f"{text}\n{desc}" if text else desc
@@ -310,7 +322,6 @@ async def handle_message(message) -> None:
     })
     save_messages_to_disk()
 
-    # Триггер 1: 1000 сообщений
     if len(daily_messages[cid]) >= 1000:
         logger.info(f"Чат {cid}: 1000 сообщений → дайджест")
         await _send_digest_for_chat(cid)
@@ -320,17 +331,20 @@ async def _send_digest_for_chat(cid: int) -> None:
     msgs = daily_messages.get(cid, [])
     if len(msgs) < 5: return
     important = filter_important_messages(msgs, 30)
-    log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in important)
+    # Формируем лог для модели
+    log = "\n".join(f"[{m['link']}] @{m['author']}: {m['text']}" for m in important)
     result = await generate_zyablograf(log, cid)
     greeting = get_greeting(); formatted = format_for_telegram(result)
     full = f"{greeting}\n\n{formatted}"
     MAX = 4000
-    if len(full) <= MAX: await send_safe(cid, full, parse_mode="MarkdownV2", thread_id=1)
+    
+    if len(full) <= MAX:
+        await send_safe(cid, full, parse_mode="MarkdownV2")
     else:
-        parts = split_by_paragraphs(formatted, MAX - 100)
-        for i, p in enumerate(parts):
-            await send_safe(cid, f"{greeting}\n\n{p}" if i==0 else p, parse_mode="MarkdownV2", thread_id=1)
-            if i < len(parts)-1: await asyncio.sleep(1)
+        parts = split_by_paragraphs(full, MAX)
+        for p in parts:
+            await send_safe(cid, p, parse_mode="MarkdownV2")
+            await asyncio.sleep(1.5)
     
     daily_messages[cid] = []; reactions[cid] = []
     digest_sent_today.pop(cid, None)
@@ -357,8 +371,8 @@ async def digest_checker() -> None:
 async def send_raid(cid: int) -> None:
     msgs = daily_messages.get(cid, [])
     if len(msgs) < 10: return
-    log = "\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in filter_important_messages(msgs, 20))
-    await send_safe(cid, await generate_raid(log, cid), thread_id=1)
+    log = "\n".join(f"[{m['link']}] @{m['author']}: {m['text']}" for m in filter_important_messages(msgs, 20))
+    await send_safe(cid, await generate_raid(log, cid))
 
 async def raid_scheduler() -> None:
     while True:
@@ -426,7 +440,7 @@ async def process_admin_command(update) -> None:
         msgs=daily_messages.get(cid, [])
         if len(msgs)<5: await send_safe(ADMIN_ID, f"❌ Всего {len(msgs)} сообщ. (нужно ≥5)."); return
         msgs=msgs[-min(cnt,len(msgs))]; msgs=filter_important_messages(msgs,30)
-        log="\n".join(f"[{m['link']}] {m['author']}: {m['text']}" for m in msgs)
+        log="\n".join(f"[{m['link']}] @{m['author']}: {m['text']}" for m in msgs)
         await send_safe(ADMIN_ID, f"🧪 Генерирую..."); result=await generate_zyablograf(log, cid)
         full=f"{get_greeting()}\n\n{format_for_telegram(result)}"
         if len(full)<=4000: await send_safe(ADMIN_ID, full, parse_mode="MarkdownV2")
@@ -450,31 +464,19 @@ async def process_admin_command(update) -> None:
         await send_safe(ADMIN_ID, f"""🛠 ПОМОЩЬ ПО КОМАНДАМ ЗЯБЛОГРАФА
 
 📰 ДАЙДЖЕСТЫ (АВТО-СВОДКИ)
-• ⏰ /settime ЧЧ:ММ — задаёт точное время ежедневной сводки (МСК).
-  Пример: /settime 18:00
-  💡 Сейчас: {s['send_hour']:02d}:{s['send_minute']:02d}
-• 🔄 Триггеры срабатывания (любой из трёх):
-  1. Набралось 1000 сообщений → мгновенная сводка.
-  2. Прошло 24 часа с первого сообщения в буфере.
-  3. Наступило время из /settime (раз в сутки).
+• ⏰ /settime ЧЧ:ММ — точное время ежедневной сводки (МСК). Сейчас: {s['send_hour']:02d}:{s['send_minute']:02d}
+• 🔄 Триггеры: 1000 сообщений | 24ч с первого сообщения | /settime
 
 🤬 РЕЙДЫ (АВТО-НАЕЗДЫ)
-• 🤬 /raid on|off — включить или выключить авто-рейды.
-• 🎯 /raid now [чат_id] — вызвать рейд прямо сейчас.
-• 🕒 /raid_timer МИН МАКС — случайный интервал между рейдами (в часах).
-  Пример: /raid_timer 3 7 (рейды будут происходить случайно каждые 3–7 часов)
-  💡 Сейчас: {s.get('raid_min_hours', 2)}–{s.get('raid_max_hours', 12)} ч. | Статус: {raid_s}
+• 🤬 /raid on|off — вкл/выкл авто-рейды.
+• 🎯 /raid now [чат_id] — вызвать рейд сейчас.
+• 🕒 /raid_timer МИН МАКС — интервал между рейдами (часы). Сейчас: {s.get('raid_min_hours', 2)}–{s.get('raid_max_hours', 12)} ч. | Статус: {raid_s}
 
 ⚙️ НАСТРОЙКИ
-• 🔥 /mood light|medium|hard|ultra — степень мата в сводках.
-• 📋 /add_chat|remove_chat|list_chats — управление чатами.
-• 🧪 /test [чат_id] [кол-во] — тестовая сводка по последним N сообщениям.
-• /status — показать текущие настройки и буфер.
-• /reset [чат_id] — очистить накопленные сообщения.
-• /backup — сгенерировать список команд для восстановления настроек.
-
-💡 КАК ЭТО РАБОТАЕТ:
-Бот копит сообщения в фоне. Дайджест выстрелит по расписанию /settime, ИЛИ при 1000 сообщ., ИЛИ через 24ч от первого. Рейды ходят случайно в заданном /raid_timer диапазоне. Все команды работают только в ЛС с ботом.""")
+• 🔥 /mood light|medium|hard|ultra — степень мата.
+• 📋 /add_chat|remove_chat|list_chats
+• 🧪 /test [чат_id] [кол-во]
+• /status | /reset | /backup""")
 
 # ========== ЗАПУСК ==========
 async def main() -> None:
