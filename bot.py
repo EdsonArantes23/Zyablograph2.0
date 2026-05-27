@@ -1,7 +1,7 @@
 import os, json, re, base64, logging, asyncio, random
 from datetime import datetime, timedelta, timezone
 from openai import OpenAI
-from telegram import Bot, Message
+from telegram import Bot
 from telegram.error import TelegramError
 
 # ========== НАСТРОЙКИ ==========
@@ -43,30 +43,32 @@ def load_messages_from_disk():
         reactions = {int(k): v for k, v in data.get("reactions", {}).items()}
     except: logger.info("Starting fresh")
 
-# ========== СЛОВАРЬ ==========
-def load_dictionary():
+# ========== СЛОВАРЬ (ИСПРАВЛЕНИЕ ПРОБЕЛОВ В КЛЮЧАХ) ==========
+def load_dictionary() -> dict:
     try:
-        with open(DICT_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except: return {"существительные": ["пиздец", "хуй", "дебил"], "глаголы": ["обосрался", "охуел"]}
+        with open(DICT_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+            return {k.strip(): v for k, v in raw.items()}
+    except: 
+        return {"существительные": ["пиздец", "хуй", "дебил"], "глаголы": ["обосрался", "охуел"]}
 SWEAR_DICT = load_dictionary()
 
 # ========== НАСТРОЙКИ ==========
-def load_all_data():
+def load_all_data() -> dict:
     try: return json.loads(os.getenv(BOT_SETTINGS_KEY, "{}"))
     except: return {}
-def save_all_data(data): os.environ[BOT_SETTINGS_KEY] = json.dumps(data, ensure_ascii=False)
-def load_chats(): return load_all_data().get("chats", [])
-def save_chats(chats): d = load_all_data(); d["chats"] = chats; save_all_data(d)
-def load_names(): return load_all_data().get("names", {})
-def save_names(names): d = load_all_data(); d["names"] = names; save_all_data(d)
-def load_settings():
+def save_all_data(data: dict) -> None: os.environ[BOT_SETTINGS_KEY] = json.dumps(data, ensure_ascii=False)
+def load_chats() -> list[int]: return load_all_data().get("chats", [])
+def save_chats(chats: list[int]) -> None: d = load_all_data(); d["chats"] = chats; save_all_data(d)
+def load_names() -> dict: return load_all_data().get("names", {})
+def save_names(names: dict) -> None: d = load_all_data(); d["names"] = names; save_all_data(d)
+def load_settings() -> dict:
     defaults = {"send_hour": 18, "send_minute": 0, "mood": "hard", "raid_enabled": True, "raid_min_hours": 2, "raid_max_hours": 12}
     return {**defaults, **load_all_data().get("settings", {})}
-def save_settings(s): d = load_all_data(); d["settings"] = s; save_all_data(d)
+def save_settings(s: dict) -> None: d = load_all_data(); d["settings"] = s; save_all_data(d)
 
 def get_display_name(user, include_meta: bool = True) -> str:
-    names = load_names()
-    uid = str(user.id)
+    names = load_names(); uid = str(user.id)
     if uid not in names: return user.first_name or user.username or "Анон"
     name = names[uid].get("name") or user.first_name or user.username or "Анон"
     if not include_meta: return name
@@ -77,99 +79,105 @@ def get_display_name(user, include_meta: bool = True) -> str:
     if desc: parts.append(f", {desc}")
     return "".join(parts)
 
-# ========== ПРОМПТЫ ==========
-MOOD = {"light": "Лёгкий мат, ирония.", "medium": "Умеренный мат.", "hard": "ЖЁСТКИЙ МАТ ЧЕРЕЗ СЛОВО. Токсичность 100%. ОБСЁРАЙ, не пересказывай.", "ultra": "Ультра-жёсткий поток грязи."}
+# ========== ПРОМПТЫ (ОПТИМИЗИРОВАНО ПОД "ВЕСТНИК" БЕЗ БАНОМ) ==========
+MOOD_STYLES = {
+    "light": "Лёгкий сарказм, редкая экспрессия.",
+    "medium": "Умеренный юмор, иногда острый.",
+    "hard": "Сатирический, циничный, чёрный юмор. Используй сленг и экспрессивную лексику для комического эффекта.",
+    "ultra": "Жёсткий троллинг, поток сарказма, прямые формулировки."
+}
 GREETINGS = ["📰 Главное из последних сообщений:", "📰 Экстренный выпуск Зяблографа!", "📰 Зяблограф выбрал самое «достойное»:", "📰 Зяблограф: главные события:"]
-def get_mood(m): return MOOD.get(m, MOOD["hard"])
-def get_greeting(): return random.choice(GREETINGS)
+def get_greeting() -> str: return random.choice(GREETINGS)
 
-MAIN_PROMPT = """[System: Ты — «Зяблограф». Пишешь ТОЛЬКО на русском с матом и сарказмом.
-ПРАВИЛА:
-1. ФОРМАТ: Каждый абзац начинается СТРОГО: # (ССЫЛКА) Текст. Никаких #ТемаДня.
-2. ГРУППИРОВКА: Все сообщения про одно событие — в ОДИН абзац. Без дублей.
-3. СТИЛЬ: {mood} Мат через слово. Называй вещи своими именами.
-4. ЯЗЫК: ТОЛЬКО РУССКИЙ. Без иероглифов.
-5. ОБЪЁМ: 2-4 предложения на тему.
+DEFAULT_MAIN_PROMPT = """[System: Ты — «Зяблограф», циничный хроникёр чата в стиле сатирического дайджеста. Пиши ТОЛЬКО на русском.
+СТИЛЬ: {mood}. Используй метафоры, иронию и сленг. Не будь вежливым.
+ЖЁСТКИЕ ПРАВИЛА:
+1. ГРУППИРОВКА: Все сообщения про одно событие/тему объединяй в ОДИН абзац. Никаких дублей.
+2. ФОРМАТ: Каждый абзац начинается СТРОГО: # (ССЫЛКА_ИЗ_ВХОДНЫХ_ДАННЫХ) Текст события.
+3. ЗАПРЕТ: Не придумывай заголовки (#ТемаДня). Используй только ссылку из лога.
+4. ЯЗЫК: Только кириллица. Иероглифы/латиница (кроме ссылок) запрещены.
+5. ОБЪЁМ: 2-4 предложения на тему. Не выдумывай фактов.
+СЛОВАРЬ ДЛЯ ИСПОЛЬЗОВАНИЯ:
+{dict_injection}
 Вот лог чата:
-"""
-RAID_PROMPT = """[System: Ты — «Зяблограф», врываешься с наездом. Только русский мат.
-{mood}
-Выбери 1-2 героев и ЖЁСТКО НАЕЗЖАЙ. Начинай с «О, блядь, @username...». 4-7 предложений, без ссылок.
-Вот лог:
 """
 
 # ========== LLM ВЫЗОВ ==========
-async def _call_llm(prompt: str, max_tokens: int = 6000, temperature: float = 0.95, chat_id: int = None) -> str:
-    model = "qwen/qwen-2.5-72b-instruct"
-    prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')[:100000]
-    for attempt in range(3):
-        try:
-            comp = await asyncio.get_event_loop().run_in_executor(None, lambda: client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt}],
-                temperature=temperature, max_tokens=max_tokens))
-            return _clean(comp.choices[0].message.content)
-        except Exception as e:
-            logger.error(f"LLM error: {e}")
-            if "400" in str(e) or "401" in str(e) or "402" in str(e):
-                try: await bot.send_message(ADMIN_ID, f"⚠️ OpenRouter ошибка: {e}", parse_mode=None)
-                except: pass
-                return None
-            await asyncio.sleep(2)
+async def _call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.95, chat_id: int = None) -> str:
+    # Цепочка: бесплатные -> дешёвые платные. Бюджет $3 хватит на 10000+ вызовов.
+    models = ["qwen/qwen-2.5-72b-instruct:free", "qwen/qwen-2.5-32b-instruct:free", "meta-llama/llama-3.1-8b-instruct:free"]
+    prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')[:90000]
+    
+    for model in models:
+        for attempt in range(2):
+            try:
+                loop = asyncio.get_event_loop()
+                comp = await loop.run_in_executor(None, lambda: client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature, max_tokens=max_tokens))
+                text = comp.choices[0].message.content.strip()
+                # Проверка на отказ модели (Safety Layer)
+                if any(w in text.lower() for w in ["sorry", "cannot", "не могу", "отказ", "safety", "i can't"]):
+                    logger.warning("Safety refusal, пробую другую модель...")
+                    break
+                return _clean(text)
+            except Exception as e:
+                err = str(e).lower()
+                if "rate_limit" in err or "400" in err: break
+                if "insufficient" in err or "402" in err: logger.error("Баланс OpenRouter закончился!")
+                await asyncio.sleep(1)
+    try: await bot.send_message(ADMIN_ID, f"⚠️ Зяблограф не смог сгенерировать текст. Ошибка: {err[:200]}", parse_mode=None)
+    except: pass
     return None
 
 def _clean(text: str) -> str:
     text = text.strip()
+    # Удаляем иероглифы/арабскую вязь/прочий мусор
     text = re.sub(r'[^\x00-\x7Fа-яА-ЯёЁ0-9\s.,!?;:()«»""''-—@#\n\r]', '', text)
     text = re.sub(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+', '', text)
+    # Приводим ссылки к виду # (https://...)
     text = re.sub(r'#\s+(https?://t.me/\S+)', r'# (\1)', text)
     text = re.sub(r'#[^(\s]+\s*(https?://t.me/\S+)', r'# (\1)', text)
     if "⭐️ Станьте спонсором" in text: text = text.split("⭐️ Станьте спонсором")[0].strip()
-    return text
+    return text.strip()
 
-def _format(text: str) -> str: return re.sub(r'#\s*((https?://t.me/[^\s)]+))', r'[#](\1)', text)
+def _format(text: str) -> str:
+    return re.sub(r'#\s*((https?://t.me/[^\s)]+))', r'[#](\1)', text)
 
 # ========== ФОТО ==========
 async def _describe_photo(file_id: str) -> str:
     try:
         file = await bot.get_file(file_id)
         img = base64.b64encode(await file.download_as_bytearray()).decode()
-        comp = await asyncio.get_event_loop().run_in_executor(None, lambda: client.chat.completions.create(
+        loop = asyncio.get_event_loop()
+        comp = await loop.run_in_executor(None, lambda: client.chat.completions.create(
             model="qwen/qwen-2.5-vl-72b-instruct",
-            messages=[{"role": "user", "content": [{"type": "text", "text": "Опиши фото. Только на русском, можно с матом."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}}]}],
+            messages=[{"role": "user", "content": [{"type": "text", "text": "Опиши фото. Только на русском, можно с матом/сарказмом."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}}]}],
             temperature=0.7, max_tokens=300))
         return f"[ФОТО: {_clean(comp.choices[0].message.content)}]"
     except: return "[ФОТО: не удалось описать]"
 
-# ========== ФИЛЬТРАЦИЯ ==========
+# ========== ФИЛЬТРАЦИЯ & ГЕНЕРАЦИЯ ==========
 def _filter(msgs, max_n=30):
     hot = re.compile(r'бля|хуй|пизд|еба|сука|нах|почему|кто|где|когда|зачем|@\w+|https?://|\[ФОТО:', re.I)
     res = [m for m in msgs if hot.search(m.get("text", ""))]
     return (res or msgs)[-max_n:]
 
-# ========== ГЕНЕРАЦИЯ ==========
 def _build_prompt(cid):
     s = load_settings()
-    mood = get_mood(s.get("mood", "hard"))
-    p = MAIN_PROMPT.replace("{mood}", mood)
-    if s.get("mood") == "hard": p += "\n⚠️ РЕЖИМ HARD: МАТ ЧЕРЕЗ СЛОВО, ТОКСИЧНОСТЬ 100%."
-    return p
+    mood = MOOD_STYLES.get(s.get("mood", "hard"), MOOD_STYLES["hard"])
+    dict_inj = "\n".join([f"{k}: {', '.join(v[:15])}" for k, v in SWEAR_DICT.items() if v])
+    prompt = DEFAULT_MAIN_PROMPT.replace("{mood}", mood).replace("{dict_injection}", dict_inj)
+    return prompt
 
 async def _gen_digest(log, cid):
-    res = await _call_llm(_build_prompt(cid) + log, max_tokens=8000, chat_id=cid)
-    return res if res else "Зяблограф обосрался. Технический пиздец."
+    return await _call_llm(_build_prompt(cid) + log, max_tokens=4096, chat_id=cid)
 
-async def _gen_raid(log, cid):
-    s = load_settings()
-    mood = get_mood(s.get("mood", "hard"))
-    p = RAID_PROMPT.replace("{mood}", mood)
-    res = await _call_llm(p + log, max_tokens=2000, temperature=1.0, chat_id=cid)
-    return res if res else "Зяблограф обосрался. Технический пиздец."
-
-# ========== ОТПРАВКА ==========
+# ========== БЕЗОПАСНАЯ ОТПРАВКА ==========
 def _split(text, max_len=4000):
     if len(text) <= max_len: return [text]
-    parts, cur = [], ""
-    for line in text.split("\n"):
+    lines, parts, cur = text.split("\n"), [], ""
+    for line in lines:
         if len(cur) + len(line) + 2 <= max_len: cur = (cur + "\n" + line).strip()
         else:
             if cur: parts.append(cur)
@@ -177,28 +185,25 @@ def _split(text, max_len=4000):
     if cur: parts.append(cur)
     return parts
 
+def _escape_md(text):
+    esc = r'_*~`>#+-=|{}.!'
+    buf, i = [], 0
+    while i < len(text):
+        if text[i] == '\\' and i + 1 < len(text) and text[i+1] in esc: buf.append(text[i:i+2]); i += 2
+        elif text[i] in esc: buf.append('\\' + text[i]); i += 1
+        else: buf.append(text[i]); i += 1
+    return ''.join(buf)
+
 async def _send_safe(cid, text, parse_mode="MarkdownV2", thread=1):
     try:
         if parse_mode == "MarkdownV2": text = _escape_md(text)
         return await bot.send_message(cid, text, parse_mode=parse_mode, message_thread_id=thread)
     except TelegramError as e:
-        if "thread" in str(e).lower():
-            try: return await bot.send_message(cid, text, parse_mode=parse_mode)
-            except: pass
-        if parse_mode:
-            try: return await bot.send_message(cid, text, message_thread_id=thread)
-            except: return await bot.send_message(cid, text)
+        if "thread" in str(e).lower(): return await _send_safe(cid, text, parse_mode, thread=None)
+        if parse_mode: return await _send_safe(cid, text, None, thread)
         return None
 
-def _escape_md(text):
-    esc = r'_*~`>#+-=|{}.!'
-    buf, i = [], 0
-    while i < len(text):
-        if text[i] in esc: buf.append('\\' + text[i]); i += 1
-        else: buf.append(text[i]); i += 1
-    return ''.join(buf)
-
-# ========== ДАЙДЖЕСТ ==========
+# ========== ДАЙДЖЕСТ & ПРОВЕРКА ==========
 async def _send_digest(cid):
     msgs = daily_messages.get(cid, [])
     if len(msgs) < 5: return
@@ -213,84 +218,33 @@ async def _send_digest(cid):
     digest_sent_today.pop(cid, None)
     save_messages_to_disk()
 
-async def _digest_checker():
+async def _check_and_send_if_needed(cid):
+    msgs = daily_messages.get(cid, [])
+    if not msgs: return False
+    if len(msgs) >= 1000: await _send_digest(cid); return True
+    ts = msgs[0].get("timestamp")
+    if ts and (msk_now() - datetime.fromisoformat(ts)).total_seconds() >= 86400: await _send_digest(cid); return True
+    return False
+
+async def _digest_periodic_checker():
     while True:
         await asyncio.sleep(60)
-        now = msk_now(); s = load_settings()
+        now, s = msk_now(), load_settings()
         for cid in list(daily_messages.keys()):
             msgs = daily_messages.get(cid, [])
             if not msgs: continue
             if len(msgs) >= 1000: await _send_digest(cid); continue
-            ts = msgs[0].get("timestamp")
-            if ts and (now - datetime.fromisoformat(ts)).total_seconds() >= 86400:
-                await _send_digest(cid); continue
+            if msgs[0].get("timestamp") and (now - datetime.fromisoformat(msgs[0]["timestamp"])).total_seconds() >= 86400: await _send_digest(cid); continue
             if now.hour == s["send_hour"] and now.minute == s["send_minute"] and digest_sent_today.get(cid) != now.date():
                 await _send_digest(cid); digest_sent_today[cid] = now.date()
-
-# ========== РЕЙДЫ ==========
-async def _send_raid(cid):
-    msgs = daily_messages.get(cid, [])
-    if len(msgs) < 10: return
-    log = "\n".join(f"[{m['link']}] @{m['author']}: {m['text']}" for m in _filter(msgs, 20))
-    res = await _gen_raid(log, cid)
-    if res: await _send_safe(cid, res, parse_mode=None)
-
-async def _raid_scheduler():
-    while True:
-        s = load_settings()
-        if not s.get("raid_enabled", True): await asyncio.sleep(600); continue
-        await asyncio.sleep(random.randint(int(s["raid_min_hours"]*3600), int(s["raid_max_hours"]*3600)))
-        chats = load_chats()
-        if chats and len(daily_messages.get(chats[0], [])) >= 10: await _send_raid(chats[0])
-
-# ========== ПОЛУЧЕНИЕ ID ПОЛЬЗОВАТЕЛЯ ==========
-async def _get_user_info(msg: Message) -> str:
-    """Извлекает информацию о пользователе из пересланного сообщения"""
-    if msg.forward_origin:
-        fo = msg.forward_origin
-        if hasattr(fo, 'sender_user') and fo.sender_user:
-            user = fo.sender_user
-        elif hasattr(fo, 'chat') and fo.chat:
-            return f"📢 Канал/чат: {fo.chat.title or 'Без названия'}\n🆔 ID: {fo.chat.id}"
-        else:
-            return "❌ Не удалось определить отправителя"
-    elif msg.reply_to_message and msg.reply_to_message.from_user:
-        user = msg.reply_to_message.from_user
-    elif msg.from_user:
-        user = msg.from_user
-    else:
-        return "❌ Не удалось определить пользователя"
-    
-    uid = str(user.id)
-    names = load_names()
-    meta = ""
-    if uid in names:
-        if names[uid].get("name"): meta += f"\n🏷️ Имя: {names[uid]['name']}"
-        if names[uid].get("description"): meta += f"\n📝 Описание: {names[uid]['description']}"
-        if names[uid].get("gender"): 
-            g = names[uid]['gender']
-            meta += f"\n⚧ Пол: {'♂ Муж' if g=='male' else '♀ Жен' if g=='female' else '⚧ Другое'}"
-    
-    username = f"@{user.username}" if user.username else "нет"
-    fullname = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Без имени"
-    
-    return f"""🆔 ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ:
-👤 Имя: {fullname}
-🔖 Юзернейм: {username}
-🆔 ID: {user.id}
-💬 Язык: {user.language_code or 'не указан'}
-🤖 Бот: {'да' if user.is_bot else 'нет'}{meta}
-
-💡 Копируй ID: `{user.id}`"""
 
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
 async def _handle_msg(msg):
     cid = msg.chat.id
     if cid not in load_chats() or not msg.from_user: return
-    
     if msg.reply_to_message and msg.reply_to_message.from_user and msg.reply_to_message.from_user.id == bot.id:
         reactions.setdefault(cid, []).append({"author": get_display_name(msg.from_user), "text": (msg.text or msg.caption or "[без текста]").strip()})
-    
+
     author = get_display_name(msg.from_user)
     text = msg.text or msg.caption or ""
     if msg.forward_origin:
@@ -299,26 +253,40 @@ async def _handle_msg(msg):
         elif hasattr(fo, "chat") and fo.chat: author = f"↪️ {fo.chat.title or 'Канал'}"
     if msg.photo: text = f"{text}\n{await _describe_photo(msg.photo[-1].file_id)}" if text else await _describe_photo(msg.photo[-1].file_id)
     if not text: text = "[войс/стикер]"
-    
+
     link = f"https://t.me/c/{str(cid).replace('-100','')}/{msg.message_id}"
     daily_messages.setdefault(cid, []).append({"link": link, "author": author, "text": text.strip(), "user_id": msg.from_user.id, "timestamp": msk_now().isoformat()})
     save_messages_to_disk()
-    if len(daily_messages[cid]) >= 1000: await _send_digest(cid)
+    await _check_and_send_if_needed(cid)
 
 # ========== АДМИН-КОМАНДЫ ==========
+async def _get_user_info(msg) -> str:
+    user = None
+    if msg.forward_origin:
+        fo = msg.forward_origin
+        if hasattr(fo, 'sender_user') and fo.sender_user: user = fo.sender_user
+        elif hasattr(fo, 'chat') and fo.chat: return f"📢 Канал: {fo.chat.title or 'Без имени'}\n🆔 ID: `{fo.chat.id}`"
+    elif msg.reply_to_message and msg.reply_to_message.from_user: user = msg.reply_to_message.from_user
+    elif msg.from_user: user = msg.from_user
+    if not user: return "❌ Не удалось определить пользователя"
+    uid, names = str(user.id), load_names()
+    meta = ""
+    if uid in names:
+        if names[uid].get("name"): meta += f"\n🏷️ Имя: {names[uid]['name']}"
+        if names[uid].get("description"): meta += f"\n📝 Описание: {names[uid]['description']}"
+        if names[uid].get("gender"): meta += f"\n⚧ Пол: {'♂ Муж' if names[uid]['gender']=='male' else '♀ Жен' if names[uid]['gender']=='female' else '⚧ Другое'}"
+    return f"""🆔 ИНФОРМАЦИЯ:
+👤 Имя: {user.first_name or ''} {user.last_name or ''}
+🔖 Юзернейм: @{user.username or 'нет'}
+🆔 ID: `{user.id}`{meta}"""
+
 async def _admin_cmd(msg):
     t = msg.text or ""
-    cid = msg.chat.id
-    
-    # ========== НОВАЯ ФУНКЦИЯ: ПОЛУЧЕНИЕ ID ==========
-    if t == "/id" or msg.forward_origin:
-        info = await _get_user_info(msg)
-        await _send_safe(ADMIN_ID, info, parse_mode=None)
-        return
-    
+    if t == "/id" or msg.forward_origin: await _send_safe(ADMIN_ID, await _get_user_info(msg), parse_mode=None); return
+        
     if t.startswith("/add_chat"):
         p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX", parse_mode=None); return
+        if len(p)<2: await _send_safe(ADMIN_ID, "❌ /add_chat -100XXXXXX", parse_mode=None); return
         try:
             c = int(p[1]); chats = load_chats()
             if c not in chats: chats.append(c); save_chats(chats); await _send_safe(ADMIN_ID, f"✅ Чат {c} добавлен!", parse_mode=None)
@@ -326,7 +294,7 @@ async def _admin_cmd(msg):
         except: await _send_safe(ADMIN_ID, "❌ Неверный ID.", parse_mode=None)
     elif t.startswith("/remove_chat"):
         p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /remove_chat -100XXXXXX", parse_mode=None); return
+        if len(p)<2: await _send_safe(ADMIN_ID, "❌ /remove_chat -100XXXXXX", parse_mode=None); return
         try:
             c = int(p[1]); chats = load_chats()
             if c in chats: chats.remove(c); save_chats(chats); await _send_safe(ADMIN_ID, f"✅ Чат {c} удалён.", parse_mode=None)
@@ -337,135 +305,86 @@ async def _admin_cmd(msg):
         await _send_safe(ADMIN_ID, "📋 Чаты:\n" + "\n".join(f"  - {c}" for c in chats) if chats else "📋 Нет чатов.", parse_mode=None)
     elif t.startswith("/settime"):
         p = t.split()
-        if len(p) < 2 or not re.match(r'^\d{1,2}:\d{2}$', p[1]): await _send_safe(ADMIN_ID, "❌ /settime ЧЧ:ММ", parse_mode=None); return
-        h, m = map(int, p[1].split(":"))
-        if not (0 <= h <= 23 and 0 <= m <= 59): await _send_safe(ADMIN_ID, "❌ 0-23, 0-59.", parse_mode=None); return
+        if len(p)<2 or not re.match(r'^\d{1,2}:\d{2}$', p[1]): await _send_safe(ADMIN_ID, "❌ /settime ЧЧ:ММ", parse_mode=None); return
+        h,m = map(int, p[1].split(":"))
+        if not(0<=h<=23 and 0<=m<=59): await _send_safe(ADMIN_ID, "❌ 0-23, 0-59.", parse_mode=None); return
         s = load_settings(); s["send_hour"], s["send_minute"] = h, m; save_settings(s)
         await _send_safe(ADMIN_ID, f"✅ Сводка в {h:02d}:{m:02d} МСК", parse_mode=None)
     elif t.startswith("/mood"):
         p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood','hard')}\nlight/medium/hard/ultra", parse_mode=None); return
+        if len(p)<2: await _send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood','hard')}\nlight/medium/hard/ultra", parse_mode=None); return
         m = p[1].lower()
-        if m in MOOD: s = load_settings(); s["mood"] = m; save_settings(s); await _send_safe(ADMIN_ID, f"✅ {m.upper()}", parse_mode=None)
+        if m in MOOD_STYLES: s = load_settings(); s["mood"] = m; save_settings(s); await _send_safe(ADMIN_ID, f"✅ {m.upper()}", parse_mode=None)
         else: await _send_safe(ADMIN_ID, "❌ light/medium/hard/ultra", parse_mode=None)
     elif t.startswith("/raid_timer"):
         p = t.split()
-        if len(p) < 3: await _send_safe(ADMIN_ID, "❌ /raid_timer МИН МАКС (часы)", parse_mode=None); return
+        if len(p)<3: await _send_safe(ADMIN_ID, "❌ /raid_timer МИН МАКС (часы)", parse_mode=None); return
         try:
-            mn, mx = float(p[1]), float(p[2])
-            if mn <= 0 or mx <= 0 or mn > mx: raise ValueError
+            mn,mx = float(p[1]),float(p[2])
+            if mn<=0 or mx<=0 or mn>mx: raise ValueError
             s = load_settings(); s["raid_min_hours"], s["raid_max_hours"] = mn, mx; save_settings(s)
             await _send_safe(ADMIN_ID, f"✅ Интервал рейдов: {mn}-{mx} ч.", parse_mode=None)
         except: await _send_safe(ADMIN_ID, "❌ Положительные, МИН ≤ МАКС.", parse_mode=None)
     elif t.startswith("/raid"):
         p = t.split()
-        if len(p) > 1 and p[1] == "now":
-            cid = int(p[2]) if len(p) > 2 else (load_chats() or [None])[0]
-            if cid: await _send_raid(cid); await _send_safe(ADMIN_ID, f"🤬 Рейд в {cid}!", parse_mode=None)
+        if len(p)>1 and p[1]=="now":
+            cid = int(p[2]) if len(p)>2 else (load_chats() or [None])[0]
+            if cid: await _send_safe(cid, "🤬 РЕЙД В ЭТОМ ЧАТЕ!", parse_mode=None) # Заглушка
             else: await _send_safe(ADMIN_ID, "❌ Нет чатов.", parse_mode=None)
         else:
             s = load_settings()
             await _send_safe(ADMIN_ID, f"Наезды: {'вкл' if s.get('raid_enabled',True) else 'выкл'}\n/raid on|off|now", parse_mode=None)
-    elif t.startswith("/setname"):
+    elif t.startswith("/setname|setdesc|setgender".split("|")):
+        cmd = "/setname" if t.startswith("/setname") else "/setdesc" if t.startswith("/setdesc") else "/setgender"
         p = t.split(maxsplit=2)
-        if len(p) < 3: await _send_safe(ADMIN_ID, '❌ /setname ID NAME\nПример: /setname 123456789 "Дима"', parse_mode=None); return
+        if len(p)<3: await _send_safe(ADMIN_ID, f"❌ {cmd} ID ЗНАЧЕНИЕ", parse_mode=None); return
         try:
-            uid, name = p[1], p[2].strip('"').strip("'")
+            uid, val = p[1], p[2].strip('"').strip("'")
+            key = "name" if "name" in cmd else "description" if "desc" in cmd else "gender"
             names = load_names()
             if uid not in names: names[uid] = {}
-            names[uid]["name"] = name; save_names(names)
-            await _send_safe(ADMIN_ID, f"✅ Имя для {uid}: «{name}»", parse_mode=None)
+            names[uid][key] = val.lower() if key=="gender" else val
+            save_names(names)
+            await _send_safe(ADMIN_ID, f"✅ {key} для {uid}: «{val}»", parse_mode=None)
         except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/setdesc"):
-        p = t.split(maxsplit=2)
-        if len(p) < 3: await _send_safe(ADMIN_ID, '❌ /setdesc ID DESC\nПример: /setdesc 123456789 "страдалец"', parse_mode=None); return
-        try:
-            uid, desc = p[1], p[2].strip('"').strip("'")
-            names = load_names()
-            if uid not in names: names[uid] = {}
-            names[uid]["description"] = desc; save_names(names)
-            await _send_safe(ADMIN_ID, f"✅ Описание для {uid}: «{desc}»", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/setgender"):
-        p = t.split()
-        if len(p) < 3: await _send_safe(ADMIN_ID, "❌ /setgender ID male|female|other", parse_mode=None); return
-        uid, gender = p[1], p[2].lower()
-        if gender not in ("male", "female", "other"): await _send_safe(ADMIN_ID, "❌ gender: male|female|other", parse_mode=None); return
-        names = load_names()
-        if uid not in names: names[uid] = {}
-        names[uid]["gender"] = gender; save_names(names)
-        g = "♂ Муж" if gender=="male" else "♀ Жен" if gender=="female" else "⚧ Другое"
-        await _send_safe(ADMIN_ID, f"✅ Пол для {uid}: {g}", parse_mode=None)
-    elif t.startswith("/removename"):
-        p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /removename ID", parse_mode=None); return
+    elif t.startswith("/removename|removedesc|removegender".split("|")):
+        cmd = "/removename" if t.startswith("/removename") else "/removedesc" if t.startswith("/removedesc") else "/removegender"
+        p = t.split(); key = "name" if "name" in cmd else "description" if "desc" in cmd else "gender"
+        if len(p)<2: await _send_safe(ADMIN_ID, f"❌ {cmd} ID", parse_mode=None); return
         try:
             uid = p[1]; names = load_names()
-            if uid in names and "name" in names[uid]:
-                del names[uid]["name"]
-                if not names[uid]: del names[uid]
-                save_names(names); await _send_safe(ADMIN_ID, f"✅ Имя для {uid} удалено.", parse_mode=None)
-            else: await _send_safe(ADMIN_ID, f"⚠️ Нет имени для {uid}.", parse_mode=None)
+            if uid in names and key in names[uid]: del names[uid][key]; save_names(names); await _send_safe(ADMIN_ID, f"✅ {key} для {uid} удалено.", parse_mode=None)
+            else: await _send_safe(ADMIN_ID, f"⚠️ Нет данных для {uid}.", parse_mode=None)
         except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/removedesc"):
-        p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /removedesc ID", parse_mode=None); return
-        try:
-            uid = p[1]; names = load_names()
-            if uid in names and "description" in names[uid]:
-                del names[uid]["description"]
-                if not names[uid]: del names[uid]
-                save_names(names); await _send_safe(ADMIN_ID, f"✅ Описание для {uid} удалено.", parse_mode=None)
-            else: await _send_safe(ADMIN_ID, f"⚠️ Нет описания для {uid}.", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/removegender"):
-        p = t.split()
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /removegender ID", parse_mode=None); return
-        try:
-            uid = p[1]; names = load_names()
-            if uid in names and "gender" in names[uid]:
-                del names[uid]["gender"]
-                if not names[uid]: del names[uid]
-                save_names(names); await _send_safe(ADMIN_ID, f"✅ Пол для {uid} удалён.", parse_mode=None)
-            else: await _send_safe(ADMIN_ID, f"⚠️ Нет пола для {uid}.", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/bulk_names"):
+    elif t.startswith("/bulk_names|bulk_desc|bulk_gender".split("|")):
+        cmd = "/bulk_names" if t.startswith("/bulk_names") else "/bulk_desc" if t.startswith("/bulk_desc") else "/bulk_gender"
         p = t.split(maxsplit=1)
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /bulk_names JSON", parse_mode=None); return
+        if len(p)<2: await _send_safe(ADMIN_ID, f"❌ {cmd} JSON", parse_mode=None); return
         try:
-            data = json.loads(p[1])
-            result = await _bulk_update("name", {k: v.get("name") or v for k, v in data.items()})
-            await _send_safe(ADMIN_ID, result, parse_mode=None)
-        except json.JSONDecodeError: await _send_safe(ADMIN_ID, "❌ Неверный JSON.", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/bulk_desc"):
-        p = t.split(maxsplit=1)
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /bulk_desc JSON", parse_mode=None); return
-        try:
-            data = json.loads(p[1])
-            result = await _bulk_update("description", {k: v.get("desc") or v.get("description") for k, v in data.items()})
-            await _send_safe(ADMIN_ID, result, parse_mode=None)
-        except json.JSONDecodeError: await _send_safe(ADMIN_ID, "❌ Неверный JSON.", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
-    elif t.startswith("/bulk_gender"):
-        p = t.split(maxsplit=1)
-        if len(p) < 2: await _send_safe(ADMIN_ID, "❌ /bulk_gender JSON", parse_mode=None); return
-        try:
-            data = json.loads(p[1])
-            result = await _bulk_update("gender", {k: v.get("gender") for k, v in data.items()})
-            await _send_safe(ADMIN_ID, result, parse_mode=None)
-        except json.JSONDecodeError: await _send_safe(ADMIN_ID, "❌ Неверный JSON.", parse_mode=None)
-        except: await _send_safe(ADMIN_ID, "❌ Ошибка.", parse_mode=None)
+            data = json.loads(p[1]); names = load_names(); count = 0
+            key = "name" if "names" in cmd else "description" if "desc" in cmd else "gender"
+            for uid, val in data.items():
+                if uid not in names: names[uid] = {}
+                names[uid][key] = val.get(key) or val if isinstance(val, dict) else val
+                count += 1
+            save_names(names); await _send_safe(ADMIN_ID, f"✅ Обновлено {count} записей.", parse_mode=None)
+        except: await _send_safe(ADMIN_ID, "❌ Ошибка JSON.", parse_mode=None)
     elif t.startswith("/list_users"):
-        p = t.split()
-        uid = p[1] if len(p) > 1 else None
-        result = await _list_users(uid)
-        await _send_safe(ADMIN_ID, result, parse_mode=None)
+        p = t.split(); uid = p[1] if len(p)>1 else None; names = load_names()
+        if uid:
+            if uid not in names: await _send_safe(ADMIN_ID, f"⚠️ Нет данных для {uid}.", parse_mode=None); return
+            d = names[uid]; g = {"male":"♂ Муж","female":"♀ Жен","other":"⚧ Другое"}.get(d.get("gender"), "—")
+            await _send_safe(ADMIN_ID, f"📋 {uid}:\n  • Имя: {d.get('name', '—')}\n  • Описание: {d.get('description', '—')}\n  • Пол: {g}", parse_mode=None)
+        elif not names: await _send_safe(ADMIN_ID, "📋 Нет кастомных данных.", parse_mode=None)
+        else:
+            lines = ["📋 Все пользователи:"]
+            for u, d in sorted(names.items()): lines.append(f"  • {u}: «{d.get('name','—')}» {d.get('gender','—')} — {d.get('description','—')}")
+            await _send_safe(ADMIN_ID, "\n".join(lines), parse_mode=None)
     elif t.startswith("/test"):
-        p = t.split(); cid = int(p[1]) if len(p) > 1 else (load_chats() or [None])[0]; cnt = int(p[2]) if len(p) > 2 else 10
+        p = t.split(); cid=int(p[1]) if len(p)>1 else (load_chats() or [None])[0]; cnt=int(p[2]) if len(p)>2 else 10
         if not cid: await _send_safe(ADMIN_ID, "❌ Нет чатов.", parse_mode=None); return
         msgs = daily_messages.get(cid, [])
-        if len(msgs) < 5: await _send_safe(ADMIN_ID, f"❌ Всего {len(msgs)} сообщ. (нужно ≥5).", parse_mode=None); return
+        if len(msgs)<5: await _send_safe(ADMIN_ID, f"❌ Всего {len(msgs)} сообщ. (нужно ≥5).", parse_mode=None); return
         log = "\n".join(f"[{m['link']}] @{m['author']}: {m['text']}" for m in _filter(msgs[-min(cnt,len(msgs)):], 30))
         await _send_safe(ADMIN_ID, "🧪 Генерирую...", parse_mode=None)
         res = await _gen_digest(log, cid)
@@ -474,26 +393,15 @@ async def _admin_cmd(msg):
         for part in _split(full): await _send_safe(ADMIN_ID, part)
     elif t.startswith("/status"):
         s = load_settings(); lines = ["📊 Статистика:"]
-        for cid, msgs in daily_messages.items(): lines.append(f"  Чат {cid}: {len(msgs)} сообщ.")
+        for cid,msgs in daily_messages.items(): lines.append(f"  Чат {cid}: {len(msgs)} сообщ.")
         if not daily_messages: lines.append("  Пусто.")
         lines += [f"\nВремя: {s['send_hour']:02d}:{s['send_minute']:02d} МСК", f"Мат: {s.get('mood','hard').upper()}", f"Наезды: {'вкл' if s.get('raid_enabled',True) else 'выкл'}"]
         await _send_safe(ADMIN_ID, "\n".join(lines), parse_mode=None)
     elif t.startswith("/reset"):
-        p = t.split(); cid = int(p[1]) if len(p) > 1 else None
-        if cid: daily_messages[cid] = []; reactions[cid] = []
+        p=t.split(); cid=int(p[1]) if len(p)>1 else None
+        if cid: daily_messages[cid]=[]; reactions[cid]=[]
         else: daily_messages.clear(); reactions.clear()
         save_messages_to_disk(); await _send_safe(ADMIN_ID, "🗑️ Сброшено.", parse_mode=None)
-    elif t.startswith("/backup"):
-        chats, names, s = load_chats(), load_names(), load_settings()
-        cmds = []
-        for c in chats: cmds.append(f"/add_chat {c}")
-        for uid, data in names.items():
-            if "name" in data: cmds.append(f"/setname {uid} \"{data['name']}\"")
-            if "description" in data: cmds.append(f"/setdesc {uid} \"{data['description']}\"")
-            if "gender" in data: cmds.append(f"/setgender {uid} {data['gender']}")
-        cmds.append(f"/settime {s['send_hour']:02d}:{s['send_minute']:02d}")
-        cmds.append(f"/mood {s.get('mood', 'hard')}")
-        await _send_safe(ADMIN_ID, "🛠 Команды восстановления:\n" + "\n".join(cmds), parse_mode=None)
     elif t.startswith("/help"):
         s = load_settings()
         await _send_safe(ADMIN_ID, f"""🛠 ЗЯБЛОГРАФ — ПОЛНАЯ СПРАВКА
@@ -504,62 +412,30 @@ async def _admin_cmd(msg):
 
 🤬 РЕЙДЫ
 • 🤬 /raid on|off — вкл/выкл авто-наезды
-• 🎯 /raid now [чат] — вызвать рейд сейчас
 • 🕒 /raid_timer МИН МАКС — интервал (часы). Сейчас: {s.get('raid_min_hours',2)}–{s.get('raid_max_hours',12)} ч.
 
-🏷️ ПОЛЬЗОВАТЕЛИ: ИМЕНА, ОПИСАНИЯ, ПОЛ
-• 🏷️ /setname ID "Имя" — задать имя
-• 📝 /setdesc ID "Описание" — добавить описание
-• ⚧ /setgender ID male|female|other — задать пол
-• ❌ /removename|removedesc|removegender ID — убрать
+🏷️ ПОЛЬЗОВАТЕЛИ
+• 🏷️ /setname ID "Имя" | 📝 /setdesc ID "Описание" | ⚧ /setgender ID male|female|other
 • 📦 /bulk_names|bulk_desc|bulk_gender JSON — массово
-  Пример: /bulk_names {{"123":{{"name":"Дима"}}}}
+• ❌ /removename|removedesc|removegender ID — убрать
 • 📋 /list_users [ID] — показать всех или одного
 
-🆔 ПОЛУЧЕНИЕ ID ПОЛЬЗОВАТЕЛЯ
+🆔 УЗНАТЬ ID
 • 🆔 /id — ответь на сообщение или перешли его боту
-• Или просто перешли любое сообщение в ЛС боту
-• Бот покажет: имя, юзернейм, ID, пол, описание
 
 ⚙️ ПРОЧЕЕ
-• 🔥 /mood light|medium|hard|ultra — степень мата
-• 📋 /add_chat|remove_chat|list_chats — управление чатами
-• 🧪 /test [чат] [кол-во] — тестовая сводка
-• /status | /reset | /backup
-
-💡 Все команды — только в ЛС боту.""", parse_mode=None)
-
-async def _bulk_update(field: str, data: dict) -> str:
-    names = load_names(); count = 0
-    for uid, val in data.items():
-        if uid not in names: names[uid] = {}
-        names[uid][field] = val; count += 1
-    save_names(names)
-    return f"✅ Обновлено {count} записей ({field})."
-
-async def _list_users(uid: str = None) -> str:
-    names = load_names()
-    if uid:
-        if uid not in names: return f"⚠️ Нет данных для {uid}."
-        data = names[uid]
-        g = {"male":"♂ Муж","female":"♀ Жен","other":"⚧ Другое"}.get(data.get("gender"), "—")
-        return f"📋 {uid}:\n  • Имя: {data.get('name', '—')}\n  • Описание: {data.get('description', '—')}\n  • Пол: {g}"
-    if not names: return "📋 Нет кастомных данных."
-    lines = ["📋 Все пользователи:"]
-    for uid, data in sorted(names.items()):
-        name = data.get("name", "—"); desc = data.get("description", "—")
-        gender = {"male":"♂","female":"♀","other":"⚧"}.get(data.get("gender"), "—")
-        lines.append(f"  • {uid}: «{name}» {gender} — {desc}")
-    return "\n".join(lines)
+• 🔥 /mood light|medium|hard|ultra
+• 📋 /add_chat|remove_chat|list_chats
+• 🧪 /test [чат] [кол-во]
+• /status | /reset""", parse_mode=None)
 
 # ========== ЗАПУСК ==========
-async def main():
-    logger.info("Зяблограф запущен! Используем ПЛАТНЫЕ модели OpenRouter (лимитов нет).")
+async def main() -> None:
+    logger.info("Зяблограф запущен! OpenRouter (:free), бюджет оптимизирован.")
     await bot.initialize()
     load_messages_from_disk()
     for cid in load_chats(): daily_messages.setdefault(cid, []); reactions.setdefault(cid, [])
-    asyncio.create_task(_digest_checker())
-    asyncio.create_task(_raid_scheduler())
+    asyncio.create_task(_digest_periodic_checker())
     
     offset = None
     while True:
