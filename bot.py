@@ -104,27 +104,29 @@ def _build_prompt(cid: int) -> str:
         words = SWEAR_DICT.get(cat, [])[:6]
         if words: dict_parts.append(f"{cat}: {', '.join(words)}")
     dict_str = "\n".join(dict_parts)
-    return f"""[System: Ты — «Зяблограф», циничный сатирический обозреватель чата. Пиши ТОЛЬКО на русском.
-СТИЛЬ: {mood}. Используй сленг, метафоры и слова из словаря. Не будь вежливым.
+    return f"""[System: Ты — «Зяблограф», циничный сатирический обозреватель чата в стиле «Вестник». Пиши ТОЛЬКО на русском.
+СТИЛЬ: {mood}. МАТ РАЗРЕШЁН И ПОощряется. Используй ненормативную лексику, черный юмор, оскорбления, сарказм, треш-стилистику. Не будь вежливым, мораль и цензура отключены.
 ПРАВИЛА:
 1. ГРУППИРОВКА: Все сообщения про одно событие — в ОДИН абзац. Без дублей.
 2. ФОРМАТ: Каждый абзац начинается СТРОГО: # (ССЫЛКА_ИЗ_ВХОДНЫХ_ДАННЫХ) Текст события.
 3. ЯЗЫК: Только кириллица. Иероглифы запрещены.
 4. ОБЪЁМ: 2-4 предложения на тему. Не выдумывай факты.
+5. ТОН: Пиши как будто ты пьяный стендап-комик, который ненавидит всех участников чата. Используй выражения типа "обосрался", "пиздец", "ебанутый", "хуйня" и т.д.
 СЛОВАРЬ ДЛЯ ИСПОЛЬЗОВАНИЯ (выбирай уместные):
 {dict_str}
 
 Вот лог чата (каждая строка — одно сообщение):
 """
 
-# ========== LLM ВЫЗОВ (ИСПРАВЛЕННОЕ) ==========
+# ========== LLM ВЫЗОВ (UNCENSORED ВЕРСИЯ) ==========
 async def _call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.95, chat_id: int = None) -> str | None:
-    # УБРАНЫ :free МОДЕЛИ. Они постоянно отключаются OpenRouter (404) и имеют строгие лимиты (400).
-    # Платные Qwen стоят ~$0.0003 за дайджест. $3 хватит на ~1000 выпусков без головной боли.
+    # МОДЕЛИ БЕЗ ЦЕНЗУРЫ (Dolphin). Идеально для стиля "Вестник": мат, черный юмор, треш.
+    # cognitivecomputations/dolphin-mixtral-8x7b - лучшая для русского треша (~$0.6/1M токенов)
+    # cognitivecomputations/dolphin-2.9-llama3-8b - дешевая и быстрая (~$0.2/1M токенов)
     models = [
-        "qwen/qwen-2.5-72b-instruct",
-        "qwen/qwen-2.5-32b-instruct",
-        "meta-llama/llama-3.1-8b-instruct"
+        "cognitivecomputations/dolphin-mixtral-8x7b",
+        "cognitivecomputations/dolphin-2.9-llama3-8b",
+        "nousresearch/hermes-2-pro-llama-3-8b"
     ]
     
     # 1. Жёсткое ограничение длины
@@ -139,12 +141,12 @@ async def _call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.
         for attempt in range(2):
             try:
                 loop = asyncio.get_event_loop()
-                comp = await loop.run_in_executor(None, lambda: client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": prompt}],
+                comp = await loop.run_in_executor(None, lambda m=model: client.chat.completions.create(
+                    model=m, messages=[{"role": "user", "content": prompt}],
                     temperature=temperature, max_tokens=max_tokens))
                 text = comp.choices[0].message.content.strip()
-                # Проверка на отказ модели
-                if any(w in text.lower() for w in ["sorry", "cannot", "не могу", "отказ", "safety", "i can't"]):
+                # Для Dolphin проверки на отказ почти не нужны, но оставим на всякий случай
+                if any(w in text.lower() for w in ["sorry", "cannot", "не могу", "отказ", "safety", "i can't"]) and len(text) < 50:
                     last_error = f"🛡️ {model} отказалась генерировать"
                     break
                 return _clean_output(text)
