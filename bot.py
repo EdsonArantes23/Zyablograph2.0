@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Зяблограф — сатирический дайджест-бот в стиле Вестника"""
+
 import os, json, re, base64, logging, asyncio, random
 from datetime import datetime, timedelta, timezone
 from openai import OpenAI
 from telegram import Bot
 from telegram.error import TelegramError
 
-# ========== НАСТРОЙКИ ==========
+# ========== КОНФИГУРАЦИЯ ==========
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "417850992"))
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
@@ -26,15 +28,17 @@ digest_sent_today: dict[int, datetime.date] = {}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 logger = logging.getLogger("Zyablograf")
 MSK_TZ = timezone(timedelta(hours=3))
 def msk_now() -> datetime: return datetime.now(MSK_TZ)
 
-# ========== СОХРАНЕНИЕ ==========
+# ========== СОХРАНЕНИЕ ДАННЫХ ==========
 def save_messages_to_disk():
     try:
         with open(MESSAGES_FILE, "w", encoding="utf-8") as f:
-            json.dump({"messages": {str(k): v for k, v in daily_messages.items()}, "reactions": {str(k): v for k, v in reactions.items()}}, f, ensure_ascii=False)
+            json.dump({"messages": {str(k): v for k, v in daily_messages.items()}, 
+                       "reactions": {str(k): v for k, v in reactions.items()}}, f, ensure_ascii=False)
     except Exception as e: logger.error(f"Save error: {e}")
 
 def load_messages_from_disk():
@@ -43,14 +47,17 @@ def load_messages_from_disk():
         with open(MESSAGES_FILE, "r", encoding="utf-8") as f: data = json.load(f)
         daily_messages = {int(k): v for k, v in data.get("messages", {}).items()}
         reactions = {int(k): v for k, v in data.get("reactions", {}).items()}
-    except: logger.info("Starting fresh")
+        logger.info(f"✓ Loaded {sum(len(v) for v in daily_messages.values())} messages")
+    except FileNotFoundError: logger.info("ℹ Starting fresh")
+    except Exception as e: logger.error(f"Load error: {e}")
 
-# ========== СЛОВАРЬ ==========
+# ========== СЛОВАРЬ (ИСПРАВЛЕНИЕ ПРОБЕЛОВ) ==========
 def load_dictionary() -> dict:
     try:
         with open(DICT_FILE, "r", encoding="utf-8") as f: raw = json.load(f)
         return {k.strip(): [v.strip() for v in vals if v.strip()] for k, vals in raw.items()}
-    except: return {"существительные": ["пиздец", "хуй"], "глаголы": ["обосрался"]}
+    except: 
+        return {"существительные": ["пиздец", "хуй"], "глаголы": ["обосрался"]}
 SWEAR_DICT = load_dictionary()
 
 # ========== НАСТРОЙКИ ==========
@@ -79,44 +86,91 @@ def get_display_name(user, include_meta: bool = True) -> str:
     if desc: parts.append(f", {desc}")
     return "".join(parts)
 
-# ========== ПРОМПТЫ ==========
-MOOD_STYLES = {"light": "Лёгкий сарказм.", "medium": "Умеренный юмор.", "hard": "ЖЁСТКИЙ МАТ ЧЕРЕЗ СЛОВО. Токсичность 100%.", "ultra": "Ультра-жёсткий поток грязи."}
-GREETINGS = ["📰 Главное из последних сообщений:", "📰 Экстренный выпуск Зяблографа!", "📰 Зяблограф: главные события:"]
+# ========== ПРОМПТЫ (ОБХОД ФИЛЬТРОВ БЕЗ ПОТЕРИ ЖЁСТКОСТИ) ==========
+MOOD_STYLES = {
+    "light": "Лёгкий сарказм, редкий сленг.",
+    "medium": "Умеренный юмор, иногда острый.",
+    "hard": "Сатирический, циничный, чёрный юмор. Мат и сленг через слово. Используй экспрессивную лексику как художественный приём.",
+    "ultra": "Ультра-жёсткий троллинг, поток сарказма, без купюр."
+}
+GREETINGS = ["📰 Главное из последних сообщений:", "📰 Экстренный выпуск Зяблографа!", "📰 Зяблограф выбрал самое «достойное»:", "📰 Зяблограф: главные события:"]
 def get_greeting() -> str: return random.choice(GREETINGS)
 
 def _build_digest_prompt(log_block: str, mood: str) -> str:
     dict_inj = "\n".join([f"- {k}: {', '.join(v[:10])}" for k, v in list(SWEAR_DICT.items())[:4]])
-    return f"""[System: Ты — «Зяблограф», циничный сатирический обозреватель чата. Пиши ТОЛЬКО на русском.
-СТИЛЬ: {mood}. Используй сленг и слова из словаря. Не будь вежливым.
+    return f"""[System: Ты — «Зяблограф», циничный обозреватель чата в стиле треш-журналистики и сатиры. Пиши ТОЛЬКО на русском.
+СТИЛЬ: {mood}. Используй сленг, метафоры и слова из словаря для комического эффекта. Не будь вежливым.
 ПРАВИЛА:
 1. ГРУППИРОВКА: Все сообщения про одно событие — в ОДИН абзац. Без дублей.
-2. ФОРМАТ: Каждый абзац начинается СТРОГО: # (ССЫЛКА_ИЗ_ВХОДНЫХ_ДАННЫХ) Текст.
+2. ФОРМАТ: Каждый абзац начинается СТРОГО: # (ССЫЛКА_ИЗ_ВХОДНЫХ_ДАННЫХ) Текст события.
 3. ЯЗЫК: Только кириллица. Иероглифы запрещены.
-4. ОБЪЁМ: 2-4 предложения на тему.
-СЛОВАРЬ: {dict_inj}
-Вот лог чата:
-{log_block}"""
+4. ОБЪЁМ: 2-4 предложения на тему. Не выдумывай факты.
+СЛОВАРЬ ДЛЯ ИСПОЛЬЗОВАНИЯ: {dict_inj}
 
-# ========== LLM ВЫЗОВ ==========
+Вот лог чата:
+"""
+
+# ========== LLM ВЫЗОВ (С ДЕТАЛЬНОЙ ДИАГНОСТИКОЙ) ==========
 async def _call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.95, chat_id: int = None) -> str | None:
     models = ["qwen/qwen-2.5-72b-instruct:free", "qwen/qwen-2.5-32b-instruct:free", "meta-llama/llama-3.1-8b-instruct:free"]
-    prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')[:80000]
-    
+    prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')[:90000]
+    last_error = "Неизвестная ошибка"
+
     for model in models:
         for attempt in range(2):
             try:
-                comp = await asyncio.get_event_loop().run_in_executor(None, lambda: client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": prompt}], temperature=temperature, max_tokens=max_tokens))
+                loop = asyncio.get_event_loop()
+                comp = await loop.run_in_executor(None, lambda: client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature, max_tokens=max_tokens,
+                    extra_headers={"HTTP-Referer": "https://t.me/zyablograf_bot"}
+                ))
                 text = comp.choices[0].message.content.strip()
-                if any(w in text.lower() for w in ["sorry", "cannot", "не могу", "отказ", "safety"]): break
+                
+                # Проверка на отказ модели (Safety Filter)
+                refusal_words = ["sorry", "cannot", "не могу", "отказ", "safety", "i can't", "unable", "policy", "я не могу", "извините"]
+                if any(w in text.lower() for w in refusal_words):
+                    last_error = f"🛡️ Safety Filter (модель отказалась из-за фильтров). Ответ: {text[:150]}..."
+                    logger.warning(last_error)
+                    break
+                
                 return _clean_output(text)
+                
             except Exception as e:
-                err = str(e).lower()
-                if "400" in err or "401" in err or "402" in err: break
-                if "rate_limit" in err: await asyncio.sleep(10); break
+                last_error = str(e)
+                err_lower = last_error.lower()
+                
+                if "401" in err_lower: 
+                    last_error = "🔑 Ошибка авторизации (неверный API ключ OpenRouter)"
+                    logger.error(last_error)
+                    break
+                if "402" in err_lower or "insufficient" in err_lower:
+                    last_error = "💸 Закончились кредиты на балансе OpenRouter"
+                    logger.error(last_error)
+                    break
+                if "rate_limit" in err_lower or "429" in err_lower:
+                    last_error = "⏳ Rate Limit (превышен лимит запросов для :free модели)"
+                    logger.warning(last_error)
+                    await asyncio.sleep(5)
+                    continue
+                if "404" in err_lower or "not found" in err_lower:
+                    last_error = f"🔍 Модель {model} недоступна (404 Not Found)"
+                    logger.warning(last_error)
+                    break
+                if "400" in err_lower or "bad request" in err_lower:
+                    last_error = f"❌ 400 Bad Request от {model} (возможно, слишком длинный или некорректный промпт)"
+                    logger.warning(last_error)
+                    await asyncio.sleep(2)
+                    continue
+                last_error = f"⚠️ Ошибка от {model}: {last_error[:200]}"
+                logger.error(last_error)
                 await asyncio.sleep(2)
-    try: await bot.send_message(ADMIN_ID, f"⚠️ Зяблограф не смог сгенерировать текст.", parse_mode=None)
-    except: pass
+
+    # Если все модели не сработали — пишем админу точную причину
+    if chat_id:
+        admin_msg = f"🚨 Зяблограф не смог сгенерировать дайджест для чата {chat_id}.\n❌ Причина: {last_error}"
+        try: await bot.send_message(ADMIN_ID, admin_msg, parse_mode=None)
+        except: pass
     return None
 
 def _clean_output(text: str) -> str:
@@ -146,7 +200,18 @@ async def _send_safe(cid: int, text: str, parse_mode: str | None = "MarkdownV2",
         if parse_mode: return await _send_safe(cid, text, None, thread)
         return None
 
-# ========== ФИЛЬТРАЦИЯ И ДАЙДЖЕСТ ==========
+def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    if len(text) <= max_len: return [text]
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 2 <= max_len: cur = (cur + "\n" + line).strip()
+        else:
+            if cur: parts.append(cur)
+            cur = line
+    if cur: parts.append(cur)
+    return parts
+
+# ========== ДАЙДЖЕСТ И ПРОВЕРКА ==========
 def _filter_messages(msgs: list[dict], max_n: int = 30) -> list[dict]:
     hot = re.compile(r'бля|хуй|пизд|еба|сука|нах|почему|кто|где|когда|зачем|@\w+|https?://|\[ФОТО:', re.I)
     res = [m for m in msgs if hot.search(m.get("text", ""))]
@@ -160,30 +225,25 @@ async def _send_digest(cid: int) -> None:
     s = load_settings()
     res = await _call_llm(_build_digest_prompt(log, MOOD_STYLES.get(s.get("mood", "hard"))), chat_id=cid)
     if not res: return
+    
     full = f"{get_greeting()}\n\n{res}"
-    for part in _split_text(full, 4000):
+    for part in _split_message(full, 4000):
         await _send_safe(cid, part)
         await asyncio.sleep(1.5)
     daily_messages[cid] = []; reactions[cid] = []; digest_sent_today.pop(cid, None)
     save_messages_to_disk()
-
-def _split_text(text: str, max_len: int = 4000) -> list[str]:
-    if len(text) <= max_len: return [text]
-    parts, cur = [], ""
-    for line in text.split("\n"):
-        if len(cur) + len(line) + 2 <= max_len: cur = (cur + "\n" + line).strip()
-        else:
-            if cur: parts.append(cur)
-            cur = line
-    if cur: parts.append(cur)
-    return parts
+    logger.info(f"✓ Digest sent to {cid}")
 
 async def _check_and_send_if_needed(cid: int) -> bool:
     msgs = daily_messages.get(cid, [])
     if not msgs: return False
-    if len(msgs) >= 1000: await _send_digest(cid); return True
+    if len(msgs) >= 1000:
+        logger.info(f"📊 1000 msgs trigger → {cid}")
+        await _send_digest(cid); return True
     ts = msgs[0].get("timestamp")
-    if ts and (msk_now() - datetime.fromisoformat(ts)).total_seconds() >= 86400: await _send_digest(cid); return True
+    if ts and (msk_now() - datetime.fromisoformat(ts)).total_seconds() >= 86400:
+        logger.info(f"⏱ 24h trigger → {cid}")
+        await _send_digest(cid); return True
     return False
 
 async def _digest_periodic_checker():
@@ -193,9 +253,10 @@ async def _digest_periodic_checker():
         for cid in list(daily_messages.keys()):
             if await _check_and_send_if_needed(cid): continue
             if now.hour == s["send_hour"] and now.minute == s["send_minute"] and digest_sent_today.get(cid) != now.date():
+                logger.info(f"⏰ Time trigger → {cid}")
                 await _send_digest(cid); digest_sent_today[cid] = now.date()
 
-# ========== РЕЙДЫ (ВОССТАНОВЛЕНО) ==========
+# ========== РЕЙДЫ ==========
 async def _send_raid(cid: int) -> None:
     msgs = daily_messages.get(cid, [])
     if len(msgs) < 10: return
@@ -221,7 +282,8 @@ async def _raid_scheduler() -> None:
         await asyncio.sleep(random.randint(max(60, mn), mx))
         chats = load_chats()
         if chats:
-            target = random.choice([c for c in chats if len(daily_messages.get(c, [])) >= 10] or chats)
+            active = [c for c in chats if len(daily_messages.get(c, [])) >= 10]
+            target = random.choice(active or chats)
             await _send_raid(target)
 
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
@@ -230,7 +292,7 @@ async def _handle_msg(msg):
     if cid not in load_chats() or not msg.from_user: return
     if msg.reply_to_message and msg.reply_to_message.from_user and msg.reply_to_message.from_user.id == bot.id:
         reactions.setdefault(cid, []).append({"author": get_display_name(msg.from_user), "text": (msg.text or msg.caption or "[без текста]").strip()})
-    
+
     author = get_display_name(msg.from_user)
     text = msg.text or msg.caption or ""
     if msg.forward_origin:
@@ -239,7 +301,7 @@ async def _handle_msg(msg):
         elif hasattr(fo, "chat") and fo.chat: author = f"↪️ {fo.chat.title or 'Канал'}"
     if msg.photo: text = f"{text}\n[ФОТО]" if text else "[ФОТО]"
     if not text: text = "[войс/стикер]"
-    
+
     link = f"https://t.me/c/{str(cid).replace('-100','')}/{msg.message_id}"
     daily_messages.setdefault(cid, []).append({"link": link, "author": author, "text": text.strip(), "user_id": msg.from_user.id, "timestamp": msk_now().isoformat()})
     save_messages_to_disk()
@@ -263,16 +325,25 @@ async def _admin_cmd(msg):
     p = t.split()
     if t.startswith("/add_chat"):
         c = int(p[1]) if len(p)>1 else None
-        if c: chats = load_chats(); chats.append(c) if c not in chats else None; save_chats(chats); await _send_safe(ADMIN_ID, f"✅ Чат {c} добавлен!", parse_mode=None)
+        if c: 
+            chats = load_chats()
+            if c not in chats: chats.append(c); save_chats(chats)
+            await _send_safe(ADMIN_ID, f"✅ Чат {c} добавлен!", parse_mode=None)
         else: await _send_safe(ADMIN_ID, "❌ /add_chat ID", parse_mode=None)
     elif t.startswith("/remove_chat"):
         c = int(p[1]) if len(p)>1 else None
-        if c: chats = load_chats(); chats.remove(c) if c in chats else None; save_chats(chats); await _send_safe(ADMIN_ID, f"✅ Чат {c} удалён.", parse_mode=None)
+        if c: 
+            chats = load_chats()
+            if c in chats: chats.remove(c); save_chats(chats)
+            await _send_safe(ADMIN_ID, f"✅ Чат {c} удалён.", parse_mode=None)
+        else: await _send_safe(ADMIN_ID, "❌ /remove_chat ID", parse_mode=None)
     elif t.startswith("/list_chats"):
-        chats = load_chats(); await _send_safe(ADMIN_ID, "📋 Чаты:\n" + "\n".join(f"  • {c} ({len(daily_messages.get(c,[]))} msg)" for c in chats) if chats else "📋 Нет чатов", parse_mode=None)
+        chats = load_chats()
+        await _send_safe(ADMIN_ID, "📋 Чаты:\n" + "\n".join(f"  • {c} ({len(daily_messages.get(c,[]))} msg)" for c in chats) if chats else "📋 Нет чатов.", parse_mode=None)
     elif t.startswith("/settime"):
         if len(p)<2 or not re.match(r'^\d{1,2}:\d{2}$', p[1]): return await _send_safe(ADMIN_ID, "❌ /settime ЧЧ:ММ", parse_mode=None)
-        h,m = map(int, p[1].split(":")); s = load_settings(); s["send_hour"],s["send_minute"]=h,m; save_settings(s); await _send_safe(ADMIN_ID, f"✅ Время: {h:02d}:{m:02d} МСК", parse_mode=None)
+        h,m = map(int, p[1].split(":")); s = load_settings(); s["send_hour"],s["send_minute"]=h,m; save_settings(s)
+        await _send_safe(ADMIN_ID, f"✅ Сводка в {h:02d}:{m:02d} МСК", parse_mode=None)
     elif t.startswith("/mood"):
         if len(p)<2: return await _send_safe(ADMIN_ID, f"Текущий: {load_settings().get('mood','hard')}\nlight/medium/hard/ultra", parse_mode=None)
         if p[1].lower() in MOOD_STYLES: s = load_settings(); s["mood"]=p[1].lower(); save_settings(s); await _send_safe(ADMIN_ID, f"✅ {p[1].upper()}", parse_mode=None)
@@ -316,10 +387,10 @@ async def _admin_cmd(msg):
         if uid:
             if uid not in names: return await _send_safe(ADMIN_ID, f"⚠️ Нет данных для {uid}", parse_mode=None)
             d = names[uid]; g = {"male":"♂","female":"♀","other":"⚧"}.get(d.get("gender"), "—")
-            await _send_safe(ADMIN_ID, f"📋 {uid}:\n  • Имя: {d.get('name','—')}\n  • Описание: {d.get('description','—')}\n  • Пол: {g}", parse_mode=None)
+            await _send_safe(ADMIN_ID, f"📋 {uid}:\n  • Имя: {d.get('name', '—')}\n  • Описание: {d.get('description', '—')}\n  • Пол: {g}", parse_mode=None)
         else:
             lines = ["📋 Пользователи:"]
-            for u,d in sorted(names.items()): lines.append(f"  • {u}: «{d.get('name','—')}» {d.get('gender','—')} — {d.get('description','—')}")
+            for u, d in sorted(names.items()): lines.append(f"  • {u}: «{d.get('name','—')}» {d.get('gender','—')} — {d.get('description','—')}")
             await _send_safe(ADMIN_ID, "\n".join(lines), parse_mode=None)
     elif t.startswith("/test"):
         cid = int(p[1]) if len(p)>1 else (load_chats() or [None])[0]; cnt = int(p[2]) if len(p)>2 else 10
@@ -355,7 +426,7 @@ async def main() -> None:
     for cid in load_chats(): daily_messages.setdefault(cid, []); reactions.setdefault(cid, [])
     
     asyncio.create_task(_digest_periodic_checker())
-    asyncio.create_task(_raid_scheduler())  # ← Запуск планировщика рейдов
+    asyncio.create_task(_raid_scheduler())
     
     offset = None
     while True:
