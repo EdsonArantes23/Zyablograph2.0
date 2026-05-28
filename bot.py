@@ -368,12 +368,40 @@ async def _admin_cmd(msg):
         save_messages_to_disk(); await _send_safe(ADMIN_ID, "🗑️ Сброшено.", parse_mode=None)
     elif t.startswith("/help"):
         s = load_settings()
-        await _send_safe(ADMIN_ID, f"""🛠 ЗЯБЛОГРАФ — ПОЛНАЯ СПРАВКА
-📰 ДАЙДЖЕСТЫ: ⏰ /settime ЧЧ:ММ (сейчас {s['send_hour']:02d}:{s['send_minute']:02d}) | Триггеры: 1000 сообщ. ИЛИ 24ч ИЛИ /settime
-🤬 РЕЙДЫ: /raid on|off | /raid now [чат] | /raid_timer МИН МАКС (часы)
-🏷️ ПОЛЬЗОВАТЕЛИ: /setname ID "Имя" | /setdesc ID "Описание" | /setgender ID male|female|other | /list_users [ID]
-⚙️ ПРОЧЕЕ: /mood light|medium|hard/ultra | /add_chat|remove_chat|list_chats | /test [чат] [кол-во] | /status | /reset
-💡 Все команды — только в ЛС боту.""", parse_mode=None)
+        await _send_safe(ADMIN_ID, f"""
+🦉 **ЗЯБЛОГРАФ — ТВОЙ ЛИЧНЫЙ ГЕНЕРАТОР ТРЕША** 🦉
+
+📰 **ДАЙДЖЕСТЫ ПО ЧАТУ**
+   ⏰ Установить время: `/settime ЧЧ:ММ` (сейчас {s['send_hour']:02d}:{s['send_minute']:02d})
+   🚀 Автоматически при: 1000 сообщений ИЛИ каждые 24ч
+   🧪 Тест вручную: `/test [чат_id] [кол-во]`
+
+🤬 **РЕЙДЫ (НАЕЗДЫ НА УЧАСТНИКОВ)**
+   🔌 Вкл/Выкл: `/raid on` | `/raid off`
+   ⚡ Запустить сейчас: `/raid now [чат]`
+   ⏲️ Таймер рандомно: `/raid_timer МИН МАКС` (в часах)
+
+🏷️ **УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ**
+   ✏️ Имя: `/setname ID "Имя"`
+   📝 Описание: `/setdesc ID "Описание"`
+   ♂️♀️ Пол: `/setgender ID male|female|other`
+   📋 Список: `/list_users [ID]`
+
+⚙️ **НАСТРОЙКИ И ПРОЧЕЕ**
+   🎭 Стиль треша: `/mood light|medium|hard|ultra`
+      • `light` — лёгкий стёб
+      • `medium` — стандартный чёрный юмор
+      • `hard` — жёсткий мат и унижения (по умолчанию)
+      • `ultra` — АДский угар, без тормозов
+   ➕ Добавить чат: `/add_chat`
+   ➖ Удалить чат: `/remove_chat`
+   📜 Все чаты: `/list_chats`
+   📊 Статус бота: `/status`
+   🗑️ Сброс данных: `/reset`
+
+💡 **ВАЖНО:** Все команды работают только в личных сообщениях с ботом!
+🔥 Модель: Dolphin (без цензуры, мат разрешён и поощряется)
+""", parse_mode="Markdown")
 
 # ========== РЕЙДЫ ==========
 async def _send_raid(cid: int) -> None:
