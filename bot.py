@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Зяблограф v3.0 — Сатирический дайджест-бот в стиле Вестника"""
+"""Зяблограф v3.0 — Сатирический дайджест-бот для треш-чатов"""
 
 import os, json, re, base64, logging, asyncio, random
 from datetime import datetime, timedelta, timezone
@@ -50,11 +50,10 @@ def load_messages_from_disk():
     except FileNotFoundError: logger.info("ℹ Starting fresh")
     except Exception as e: logger.error(f"Load error: {e}")
 
-# ========== СЛОВАРЬ (АВТО-ОЧИСТКА ПРОБЕЛОВ ИЗ ТВОЕГО JSON) ==========
+# ========== СЛОВАРЬ ==========
 def load_dictionary() -> dict:
     try:
         with open(DICT_FILE, "r", encoding="utf-8") as f: raw = json.load(f)
-        # .strip() автоматически убирает пробелы из твоих ключей ("существительные ") и слов ("пиздец ")
         return {k.strip(): [v.strip() for v in vals if v.strip()] for k, vals in raw.items()}
     except: return {"существительные": ["пиздец"], "глаголы": ["обосрался"]}
 SWEAR_DICT = load_dictionary()
@@ -85,7 +84,7 @@ def get_display_name(user, include_meta: bool = True) -> str:
     if desc: parts.append(f", {desc}")
     return "".join(parts)
 
-# ========== ПРОМПТЫ (В СТИЛЕ ВЕСТНИКА + ТВОЙ СЛОВАРЬ) ==========
+# ========== ПРОМПТЫ ==========
 MOOD_STYLES = {
     "light": "Лёгкий сарказм.", "medium": "Умеренный юмор.",
     "hard": "ЖЁСТКАЯ САТИРА И ТРЕШ-ЖУРНАЛИСТИКА. МАТ ЧЕРЕЗ СЛОВО. Токсичность 100%.",
@@ -96,8 +95,6 @@ def get_greeting() -> str: return random.choice(GREETINGS)
 
 def _build_digest_prompt(cid: int) -> str:
     s = load_settings(); mood = MOOD_STYLES.get(s.get("mood", "hard"), MOOD_STYLES["hard"])
-    
-    # Берем по 10 слов из каждой категории твоего словаря для промпта
     dict_lines = []
     for cat in ["существительные", "глаголы", "прилагательные", "наречия", "эпитеты_для_людей", "метафоры"]:
         words = SWEAR_DICT.get(cat, [])[:10]
@@ -118,7 +115,6 @@ def _build_digest_prompt(cid: int) -> str:
 
 # ========== LLM ВЫЗОВ ==========
 async def _call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.95, chat_id: int = None) -> str | None:
-    # Цепочка моделей: Qwen (лучше для русского) -> Uncensored (если Qwen банит) -> Llama
     models = [
         "qwen/qwen-2.5-72b-instruct",
         "cognitivecomputations/dolphin-mixtral-8x7b",
@@ -201,13 +197,16 @@ def _filter_messages(msgs: list[dict], max_n: int = 30) -> list[dict]:
     res = [m for m in msgs if hot.search(m.get("text", ""))]
     return (res or msgs)[-max_n:]
 
-async def _send_digest(cid: int) -> None:
+# Функция генерации текста дайджеста (без отправки)
+async def _generate_digest_text(cid: int) -> str | None:
     msgs = daily_messages.get(cid, [])
-    if len(msgs) < 5: return
+    if len(msgs) < 5: return None
     filtered = _filter_messages(msgs[-500:], 30)
     log = "\n".join(f"[{m['link']}] @{m['author']}: {m['text'][:150]}" for m in filtered)
-    
-    res = await _call_llm(_build_digest_prompt(cid) + log, max_tokens=4096, chat_id=cid)
+    return await _call_llm(_build_digest_prompt(cid) + log, max_tokens=4096, chat_id=cid)
+
+async def _send_digest(cid: int) -> None:
+    res = await _generate_digest_text(cid)
     if not res: return
     
     full = f"{get_greeting()}\n\n{res}"
@@ -338,7 +337,6 @@ async def _admin_cmd(msg):
             if cid: await _send_safe(ADMIN_ID, "🔥 Запускаю рейд...", parse_mode=None); await _send_raid(cid)
             else: await _send_safe(ADMIN_ID, "❌ Нет чатов.", parse_mode=None)
     elif t.startswith("/setname") or t.startswith("/setdesc") or t.startswith("/setgender"):
-        # ИСПРАВЛЕНИЕ: maxsplit=2 сохраняет многословные имена (например "Алексей Панда")
         p = t.split(maxsplit=2)
         if len(p)<3: return await _send_safe(ADMIN_ID, f"❌ {p[0]} ID ЗНАЧЕНИЕ", parse_mode=None)
         uid, val = p[1], p[2].strip('"').strip("'")
@@ -353,12 +351,29 @@ async def _admin_cmd(msg):
             del names[uid][key]; save_names(names); await _send_safe(ADMIN_ID, f"✅ {key} удалено.", parse_mode=None)
             return
         await _send_safe(ADMIN_ID, f"⚠️ Нет данных.", parse_mode=None)
+    
+    # ========== ИСПРАВЛЕННАЯ КОМАНДА /test ==========
     elif t.startswith("/test"):
-        cid = int(p[1]) if len(p)>1 else (load_chats() or [None])[0]; cnt = int(p[2]) if len(p)>2 else 10
+        cid = int(p[1]) if len(p)>1 else (load_chats() or [None])[0]
         if not cid: return await _send_safe(ADMIN_ID, "❌ Нет чатов.", parse_mode=None)
         msgs = daily_messages.get(cid, [])
         if len(msgs)<5: return await _send_safe(ADMIN_ID, f"❌ Всего {len(msgs)} сообщ. (нужно ≥5)", parse_mode=None)
-        await _send_safe(ADMIN_ID, "🧪 Генерирую...", parse_mode=None); await _send_digest(cid)
+        
+        await _send_safe(ADMIN_ID, "🧪 Генерирую тестовый дайджест...", parse_mode=None)
+        
+        # Генерируем текст дайджеста
+        res = await _generate_digest_text(cid)
+        if not res:
+            return await _send_safe(ADMIN_ID, "❌ Не удалось сгенерировать текст", parse_mode=None)
+        
+        # Отправляем результат ТОЛЬКО в ЛС админу, НЕ в чат!
+        full = f"{get_greeting()}\n\n{res}"
+        for part in _split_message(full, 4000):
+            await _send_safe(ADMIN_ID, part)  # ← КЛЮЧЕВОЕ: ADMIN_ID, а не cid!
+            await asyncio.sleep(1.5)
+        
+        await _send_safe(ADMIN_ID, "✅ Тестовый дайджест сгенерирован и отправлен в ЛС", parse_mode=None)
+    
     elif t.startswith("/status"):
         s = load_settings(); lines = ["📊 Статистика:"]
         for cid,msgs in daily_messages.items(): lines.append(f"  Чат {cid}: {len(msgs)} сообщ.")
@@ -388,7 +403,7 @@ async def _admin_cmd(msg):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ `/settime ЧЧ:ММ` — установить время сводки
 📊 `/status` — показать статистику чата
-🧪 `/test [чат] [кол-во]` — тестовая генерация
+🧪 `/test [чат] [кол-во]` — тестовая генерация (результат в ЛС!)
 🗑️ `/reset [чат]` — сбросить буфер сообщений
 
 *Триггеры автоматической отправки:*
