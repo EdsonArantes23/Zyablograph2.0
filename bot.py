@@ -29,6 +29,7 @@ def admin_overview(cfg):
          '/schedule 18:00 — изменить время\n'
          '/autodigest on|off — автопубликация\n'
          '/digest — выпустить дайджест в группе сейчас\n'
+         '/stats — счётчик сохранённых сообщений\n'
          '/users — профили участников\n'
          '/profile ID — открыть профиль')
 
@@ -125,6 +126,33 @@ def profile_buttons(pid):
             [{'text':'✅ Разрешить персональные данные','callback_data':f'q:{pid}:1'},{'text':'🚫 Скрыть персональные данные','callback_data':f'q:{pid}:0'}],
             [{'text':'✅ Разрешить биографию','callback_data':f'p:{pid}:1'},{'text':'🚫 Запретить','callback_data':f'p:{pid}:0'}]]
 
+def message_stats(cfg):
+    """Counts actually saved Telegram messages, not updates or AI token estimates."""
+    chat=str(cfg['telegram_chat_id'])
+    now=datetime.now(timezone.utc)
+    cutoff=(now-timedelta(hours=24)).replace(tzinfo=None).isoformat(timespec='seconds')
+    with connection() as db:
+        total=db.execute('SELECT COUNT(*) FROM messages WHERE chat=?',(chat,)).fetchone()[0]
+        recent=db.execute('SELECT COUNT(*) FROM messages WHERE chat=? AND ts>=?',(chat,cutoff)).fetchone()[0]
+        participants=db.execute("SELECT COUNT(DISTINCT author_id) FROM messages WHERE chat=? AND ts>=? AND author_id IS NOT NULL AND author_id<>''",(chat,cutoff)).fetchone()[0]
+        last=db.execute('SELECT ts, author FROM messages WHERE chat=? ORDER BY ts DESC, CAST(mid AS INTEGER) DESC LIMIT 1',(chat,)).fetchone()
+    if last:
+        last_dt=datetime.fromisoformat(last[0]).replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=3)))
+        last_line=f'{last_dt:%d.%m.%Y %H:%M:%S} МСК — {last[1]}'
+    else:
+        last_line='ещё нет сообщений'
+    maximum=min(recent,1000)
+    schedule,enabled=runtime_schedule(cfg)
+    return (f'📊 Зяблограф — статистика сбора\n\n'
+            f'💬 За последние 24 часа: {recent:,}\n'
+            f'📰 Доступно для дайджеста: до {min(maximum,int(cfg.get("max_messages",1000))):,} сообщений\n'
+            f'🗃 Всего сохранено: {total:,}\n'
+            f'👥 Уникальных авторов с ID за сутки: {participants:,}\n'
+            f'🕒 Последнее сообщение: {last_line}\n'
+            f'⏰ Автодайджест: {schedule} (UTC{int(cfg.get("timezone_offset",3)):+d}), {"включён" if enabled else "выключен"}\n\n'
+            'Статистика показывает только сообщения, полученные ботом после запуска и сохранённые в его базе.\n'
+            'При отсутствии сообщений проверь права бота и Telegram Privacy Mode.')
+
 def admin_message(token,m,cfg):
     chat=m.get('chat') or {}; uid=str((m.get('from') or {}).get('id',''))
     if m.get('chat',{}).get('type','private')!='private' or int(uid or 0) not in admins(cfg):return
@@ -141,6 +169,8 @@ def admin_message(token,m,cfg):
     if cmd=='/autodigest':
         if args not in ('on','off'):send_admin(token,chat['id'],'Формат: /autodigest on или /autodigest off');return
         option_set('autodigest',args);send_admin(token,chat['id'],'✅ Автодайджест: '+args);return
+    if cmd=='/stats':
+        send_admin(token,chat['id'],message_stats(cfg));return
     if cmd=='/digest':
         send_admin(token,chat['id'],'⏳ Запускаю дайджест для группы. Результат будет опубликован туда.');run_digest(cfg,str(cfg['telegram_chat_id']));return
     if cmd in ('/start','/help','/users'):
