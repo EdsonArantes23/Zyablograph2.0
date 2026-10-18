@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parent
 DATA=Path(os.getenv('DATA_DIR',str(ROOT/'data'))); DATA.mkdir(parents=True,exist_ok=True)
 DB=Path(os.getenv('DATABASE_PATH',str(DATA/'zyablograph.sqlite3'))); DB.parent.mkdir(parents=True,exist_ok=True)
 CONFIG=ROOT/'settings.json'
-DEFAULT={'openrouter_key':'','model':'qwen/qwen3.5-35b-a3b','max_messages':1000,'hours':24,'timezone_offset':3,'digest_time':'12:00','telegram_token':'','telegram_chat_id':'','admin_ids':'','topics':'all','style':'Жёсткий сарказм, чёрный юмор, естественный мат без звёздочек.','min_stories':5,'max_stories':10,'link_chat_id':'','humor_level':4,'review_stories':True,'fact_check':True}
+DEFAULT={'openrouter_key':'','model':'qwen/qwen3.5-35b-a3b','max_messages':1000,'hours':24,'timezone_offset':3,'digest_time':'12:00','telegram_token':'','telegram_chat_id':'','admin_ids':'','topics':'all','style':'Жёсткий сарказм, чёрный юмор, естественный мат без звёздочек.','min_stories':5,'max_stories':10,'link_chat_id':'','humor_level':4,'review_stories':True,'fact_check':True,'min_story_score':6.5,'source_fallback':False,'swear_level':8,'quote_mode':'sparse'}
 
 def settings():
     c=DEFAULT.copy()
@@ -19,7 +19,7 @@ def settings():
         c.update(json.loads(CONFIG.read_text(encoding='utf-8')))
     c['openrouter_key']=os.getenv('OPENROUTER_API_KEY',c['openrouter_key'])
     c['telegram_token']=os.getenv('TELEGRAM_BOT_TOKEN',os.getenv('BOT_TOKEN',c['telegram_token']))
-    mapping={'OPENROUTER_MODEL':'model','ADMIN_IDS':'admin_ids','TELEGRAM_CHAT_ID':'telegram_chat_id','DIGEST_TIME':'digest_time','TIMEZONE_OFFSET':'timezone_offset','MAX_MESSAGES':'max_messages','DIGEST_HOURS':'hours','MAX_STORIES':'max_stories'}
+    mapping={'OPENROUTER_MODEL':'model','ADMIN_IDS':'admin_ids','TELEGRAM_CHAT_ID':'telegram_chat_id','DIGEST_TIME':'digest_time','TIMEZONE_OFFSET':'timezone_offset','MAX_MESSAGES':'max_messages','DIGEST_HOURS':'hours','MAX_STORIES':'max_stories','MIN_STORY_SCORE':'min_story_score'}
     for env,key in mapping.items():
         if os.getenv(env) is not None:c[key]=os.environ[env]
     return c
